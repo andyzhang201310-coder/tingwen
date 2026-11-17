@@ -70,7 +70,7 @@ export function mountDoc(root, ctx, id) {
         <div class="player-ctrls">
           <button class="speed-btn" data-act="speed">1.0×</button>
           <button class="icon-btn" data-act="back15" aria-label="${T('doc.back15')}">${icons.back15}</button>
-          <button class="player-play" data-act="play" aria-label="${T('common.play')}">${icons.play}</button>
+          <button class="player-play" data-act="play" aria-label="${T('common.play')}"><span class="ic ic-play">${icons.play}</span><span class="ic ic-pause">${icons.pause}</span></button>
           <button class="icon-btn" data-act="fwd15" aria-label="${T('doc.fwd15')}">${icons.fwd15}</button>
           <button class="icon-btn" data-act="export" aria-label="${T('common.export')}">${icons.share}</button>
         </div>
@@ -584,6 +584,19 @@ export function mountDoc(root, ctx, id) {
     curEl.textContent = fmtDur(ms);
     drawPlayerWave();
     paintPlayhead();
+  }
+
+  /* 播放/暂停图标只在状态真的变了才切——而且只切 class，不动按钮内部节点。
+     原来每个 timeupdate（每秒约 4 次）都给按钮赋一次 innerHTML，svg 被反复销毁重建；
+     重建若正好落在按下与抬起之间，click 会被派发到已消失元素的祖先，
+     冒泡到 root 后 closest('[data-act]') 找不到按钮——表现就是「点暂停要点好几次才生效」。 */
+  let iconPlaying = false;   // 模板初始就是播放图标
+  function paintPlayIcon() {
+    const on = ctx.player.playing;
+    if (iconPlaying === on) return;
+    iconPlaying = on;
+    playBtn.classList.toggle('is-on', on);
+    playBtn.setAttribute('aria-label', on ? T('common.pause') : T('common.play'));
   }
 
   function jumpTo(ms, play = true) {
@@ -1356,14 +1369,14 @@ export function mountDoc(root, ctx, id) {
       /* 只关掉播放态，让 paintPlayhead 自己去比对并摘掉高亮。
          这里若顺手清 playId，paintPlayhead 会误判「没变化」直接返回，高亮就摘不掉了。 */
       playOn = false;
-      playBtn.innerHTML = icons.play;
+      paintPlayIcon();
       updateProgress();
       return;
     }
     if (type === 'time' || type === 'state' || type === 'loaded') {
       if (ctx.currentDocId !== id) return;
       if (ctx.player.playing) playOn = true;
-      playBtn.innerHTML = ctx.player.playing ? icons.pause : icons.play;
+      paintPlayIcon();
       updateProgress();
       if (type === 'loaded') totalEl.textContent = fmtDur(rec.durationMs);
     }

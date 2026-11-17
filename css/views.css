@@ -600,6 +600,12 @@ html[data-theme="light"] .wave-badge { color: rgba(105, 62, 42, 0.75); }
 }
 .player-play:active { transform: scale(0.94); }
 .player-play svg { width: 24px; height: 24px; }
+/* 播放/暂停两个图标常驻、只切显示，永远不动 DOM 节点：
+   按钮内部被重建的话，按下与抬起之间节点一换，click 就丢了（表现为「点暂停没反应」） */
+.player-play .ic { grid-area: 1 / 1; display: grid; place-items: center; }
+.player-play .ic-pause { display: none; }
+.player-play.is-on .ic-play { display: none; }
+.player-play.is-on .ic-pause { display: grid; }
 .speed-btn {
   font-size: 11.5px; font-weight: 700;
   font-variant-numeric: tabular-nums;
