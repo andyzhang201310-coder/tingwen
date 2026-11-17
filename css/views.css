@@ -524,13 +524,17 @@ html[data-theme="light"] .wave-badge { color: rgba(105, 62, 42, 0.75); }
   font-weight: 550;
 }
 .para-text.search-hit { box-shadow: inset 0 -2px 0 var(--accent-line); }
-.para.playing .para-text { color: var(--text); }
-.para.playing::before {
-  content: "";
-  position: absolute; left: -18px; top: 14px; bottom: 14px;
-  width: 2px; border-radius: 2px;
-  background: var(--accent);
+/* 播放跟读：当前正在读的那一段整体亮起来（色块 + 左侧亮条 + 时间戳变实心） */
+.para.playing {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
+.para.playing .para-text { color: var(--text); }
+.para.playing .para-time {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.para.playing .para-flag { color: var(--text-2); }
 .para-empty { font-size: 13px; color: var(--text-3); padding: 8px 0 20px; line-height: 1.7; }
 
 .para-edit {

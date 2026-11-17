@@ -478,7 +478,7 @@ export function mountDoc(root, ctx, id) {
       const text = t.text || '';
       if (isEditing) {
         return `
-          <div class="para selected" data-id="${t.id}">
+          <div class="para selected" data-id="${t.id}" data-start="${t.startMs}">
             <div class="para-meta"><span class="para-time">${fmtClock(t.startMs, false)}</span>
               <span class="para-flag">${T('doc.editing')}</span></div>
             <textarea class="para-edit" data-edit="${t.id}">${esc(text)}</textarea>
@@ -504,6 +504,7 @@ export function mountDoc(root, ctx, id) {
         </div>`;
     }).join('');
     syncFixBadge();
+    paintPlayhead(true);   // innerHTML 重建后把当前播放段重新点亮（DOM 是新的）
   }
 
   /** 逐段渲染：修复处的文字带虚线标记，其余部分保留要点高亮 */
@@ -549,28 +550,45 @@ export function mountDoc(root, ctx, id) {
   }
 
   /* ── 播放联动 ── */
+  /* 播放跟读：播放头落在哪一段，那一段就整块亮起来。
+     只在真正播放过之后才点亮（否则刚打开文稿第一段就亮着，像是选中状态）；
+     暂停时保留高亮——用户多半是想看着刚才听到的位置。 */
+  let playOn = false;
+  let playId = null;
+
+  function paintPlayhead(force = false) {
+    const list = $$('.para', parasEl);
+    if (!list.length) { playId = null; return; }
+    const ms = ctx.player.currentMs;
+    let current = null;
+    list.forEach((p) => {
+      if (Number(p.dataset.start || 0) <= ms + 120) current = p;
+    });
+    /* 录音开头往往有一段静音，第一段的时间戳不在 0；
+       刚点播放时还没走到那儿，就先亮第一段，别让人以为没反应。 */
+    if (!current) current = list[0];
+    const id = playOn ? current.dataset.id : null;
+    if (id === playId && !force) return;
+    playId = id;
+    list.forEach((p) => p.classList.toggle('playing', p.dataset.id === id));
+    if (!id) return;
+    if (userScrolled || Date.now() - lastScrollTs <= 1200) return;
+    const node = list.find((p) => p.dataset.id === id);
+    if (!node) return;
+    const top = node.offsetTop - scrollEl.clientHeight * 0.42;
+    scrollEl.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  }
+
   function updateProgress() {
     const ms = ctx.player.currentMs;
     curEl.textContent = fmtDur(ms);
     drawPlayerWave();
-    const list = $$('.para', parasEl);
-    let current = null;
-    list.forEach((p) => {
-      const start = Number(p.dataset.start || 0);
-      p.classList.remove('playing');
-      if (start <= ms + 120) current = p;
-    });
-    if (current && ctx.player.playing) {
-      current.classList.add('playing');
-      if (!userScrolled && Date.now() - lastScrollTs > 1200) {
-        const top = current.offsetTop - scrollEl.clientHeight * 0.42;
-        scrollEl.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
-      }
-    }
+    paintPlayhead();
   }
 
   function jumpTo(ms, play = true) {
     if (!rec.audio) { toast(T('doc.noAudio')); return; }
+    playOn = true;
     ctx.player.seek(ms);
     if (play) ctx.player.play();
     updateProgress();
@@ -1333,8 +1351,18 @@ export function mountDoc(root, ctx, id) {
   }, { passive: true });
 
   const unsub = ctx.player.on((type) => {
+    if (type === 'ended') {
+      if (ctx.currentDocId !== id) return;
+      /* 只关掉播放态，让 paintPlayhead 自己去比对并摘掉高亮。
+         这里若顺手清 playId，paintPlayhead 会误判「没变化」直接返回，高亮就摘不掉了。 */
+      playOn = false;
+      playBtn.innerHTML = icons.play;
+      updateProgress();
+      return;
+    }
     if (type === 'time' || type === 'state' || type === 'loaded') {
       if (ctx.currentDocId !== id) return;
+      if (ctx.player.playing) playOn = true;
       playBtn.innerHTML = ctx.player.playing ? icons.pause : icons.play;
       updateProgress();
       if (type === 'loaded') totalEl.textContent = fmtDur(rec.durationMs);
