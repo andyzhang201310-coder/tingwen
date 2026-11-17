@@ -409,6 +409,9 @@ export function mountRecord(root, ctx) {
     });
     asrState = asr.supported ? 'listening' : 'unsupported';
     if (asr.supported) asr.start();
+    /* 把录音电平喂给识别层：它在「该不该重开会话」时要用这个判断
+       现在是人没说话（闲着，重开只会切掉下一句开头）还是真的卡死了 */
+    recorder.onLevel = (t, v) => asr?.voice?.(v);
     paintStatus();
     paintAsrHint();
 

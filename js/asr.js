@@ -3,8 +3,19 @@
  * - 说明：这是 Web 原型可用的实时引擎，能力来自浏览器/系统提供的识别服务，
  *   与文档中 whisper.cpp（本地）和云端实时 API 属于不同实现，接口层保持可替换。
  */
-export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onStatus, onLevel, idleMs = 20000 }) {
+export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onStatus, onLevel, idleMs = 20000, voiceThreshold = 0.15 }) {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  /* 最近一次「听到人声」的时刻，由录音器的电平喂进来。
+     没有这个信号时，看门狗分不清「会话卡死」和「只是没人说话」，
+     而后者一旦被当成卡死重开，正在说的那半句就被切掉了。 */
+  let lastVoiceAt = 0;
+  let voiceWired = false;
+  let everResult = false;
+  /* 连续「确实没人说话」而续命的次数，到上限就换一次会话，避免状态彻底坏死 */
+  let idleHolds = 0;
+  const IDLE_HOLDS_MAX = 6;
+  /* 未提交的临时结果：会话被放弃前先落库，能救回正在说的半句 */
+  let pendingInterim = '';
   const api = {
     supported: !!SR,
     active: false,
@@ -14,6 +25,11 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     pause,
     resume,
     destroy,
+    /* 由录音器每 45ms 灌一次电平，给看门狗判断「现在是没人说话」还是「会话死了」 */
+    voice(v) {
+      voiceWired = true;
+      if (Number.isFinite(v) && v >= voiceThreshold) lastVoiceAt = performance.now();
+    },
   };
 
   if (!SR) {
@@ -54,14 +70,37 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     idleTimer = setTimeout(() => {
       idleTimer = null;
       if (intentionalStop || api.paused) return;
+      /* 关键判断：这段时间到底有没有人说话。
+         没人说话 → 会话只是闲着，重开零收益，反而会把下一句的开头切掉
+         （长录音里就是「新开的一段开头缺一两个字」）。这种情况只续命，不重开。
+         有人说话却没结果 → 这才是真的卡死，必须换会话。 */
+      const quiet = performance.now() - lastVoiceAt;
+      /* VAD 没接线、或从来没收到过高于阈值的电平，就不敢下结论，退回按时间重开 */
+      const vdsLive = voiceWired && lastVoiceAt > 0;
+      const nobodySpoke = vdsLive && quiet > 1200;
+      if (everResult && nobodySpoke && idleHolds < IDLE_HOLDS_MAX) {
+        idleHolds += 1;
+        armIdle(wait);
+        return;
+      }
+      idleHolds = 0;
       const old = recog;
       recog = null;                    // 先脱钩：旧会话的 onend 不再触发重启
+      flushInterim();                  // 把没等到 final 的半句先落库，别跟着旧会话一起丢
       try { old?.abort?.() } catch { /* ignore */ }
       clearTimeout(restartTimer);
       networkDown = false;
       retryStep = 0;
       try { startOnce(); } catch { /* ignore */ }
     }, wait);
+  }
+
+  /** 会话被放弃前提交最后一条临时结果——宁可接一句毛边，也不要整句消失 */
+  function flushInterim() {
+    const t = String(pendingInterim || '').trim();
+    pendingInterim = '';
+    if (t.length < 2) return;
+    onFinal?.({ text: t, confidence: null, at: getElapsed?.() ?? 0, partial: true });
   }
 
   /** 断网时的重连：不依赖 onend 的快速重启计数，改为带间隔的定时重试 */
@@ -107,6 +146,8 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     r.onresult = (event) => {
       if (r !== recog) return;
       retryStep = 0;   // 真的收到结果了，退避归零
+      everResult = true;
+      idleHolds = 0;
       armIdle(IDLE_BUSY_MS);   // 已经在出字：再沉默这么久就判定会话卡死
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -114,13 +155,18 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
         const text = (res[0]?.transcript || '').trim();
         if (!text) continue;
         if (res.isFinal) {
+          pendingInterim = '';
           onFinal?.({ text, confidence: res[0]?.confidence || null, at: getElapsed?.() ?? 0 });
         } else {
           interim += text;
         }
       }
-      if (interim) onInterim?.({ text: interim, at: getElapsed?.() ?? 0 });
-      else onInterim?.({ text: '', at: getElapsed?.() ?? 0 });
+      if (interim) {
+        pendingInterim = interim;
+        onInterim?.({ text: interim, at: getElapsed?.() ?? 0 });
+      } else {
+        onInterim?.({ text: '', at: getElapsed?.() ?? 0 });
+      }
     };
 
     r.onerror = (e) => {
@@ -155,6 +201,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
       api.active = false;
       clearIdle();
       if (intentionalStop || api.paused) return;
+      flushInterim();                  // 引擎自己收尾了，最后半句也别丢
       if (!api.supported) return;
       /* 断网导致的中断交给 scheduleRetry，避免快速重启计数把引擎永久停掉 */
       const now = performance.now();
@@ -167,10 +214,12 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
         scheduleRetry(8000);   // 不永久停掉：间隔重试，避免录音还在继续却没有识别
         return;
       }
+      /* 30ms：onend 之后引擎已经释放，缝隙越短，正在说的字被切掉的越少。
+         原来等 220ms，一段话换气正好落在空窗里，新段开头就缺字。 */
       restartTimer = setTimeout(() => {
         if (intentionalStop || api.paused) return;
         try { startOnce(); } catch { /* ignore */ }
-      }, 220);
+      }, 30);
     };
     return r;
   }
@@ -194,11 +243,13 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     networkDown = false;
     rapidRestarts = 0;
     retryStep = 0;
+    idleHolds = 0;
     clearIdle();
     clearTimeout(retryTimer);
     /* 先脱钩再停旧会话：否则它的事件会按「当前会话」处理，可能多开一个并行会话 */
     const old = recog;
     recog = null;
+    flushInterim();
     if (old) { try { old.stop(); } catch { /* ignore */ } }
     startOnce();
   }
@@ -208,6 +259,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     clearIdle();
     clearTimeout(restartTimer);
     clearTimeout(retryTimer);
+    flushInterim();
     try { recog?.stop(); } catch { /* ignore */ }
   }
 
@@ -227,6 +279,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     clearIdle();
     clearTimeout(restartTimer);
     clearTimeout(retryTimer);
+    flushInterim();          // 停之前把最后半句交出去
     try { recog?.stop(); } catch { /* ignore */ }
     recog = null;
     api.active = false;
