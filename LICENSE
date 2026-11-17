@@ -1,0 +1,71 @@
+听文 TingWen 软件许可协议
+Copyright (c) 2026 andyzhang201310-coder. All rights reserved.
+版权所有，保留一切权利。
+
+本许可不是开源许可。除本协议明确授予的权利外，一切权利均由著作权人保留。
+
+────────────────────────────────
+一、允许的使用（无需申请）
+────────────────────────────────
+
+在遵守本协议的前提下，任何人可以免费：
+
+1. 阅读、下载、克隆本仓库的源代码；
+2. 为个人学习、教学演示、技术研究之目的，在本地运行、修改本软件；
+3. 在非商业项目中直接使用或基于本软件二次开发；
+4. 在保留本版权声明与许可声明（即本文件全文）的前提下，向他人分享本软件或其修改版本。
+
+上述使用均为非商业用途。分享修改版本时，必须同时保留本协议，且不得删除或隐藏界面与代码中的作者署名。
+
+────────────────────────────────
+二、须事先获得书面授权的使用
+────────────────────────────────
+
+以下行为属于商业使用，必须事先取得著作权人的书面授权，未获授权一律禁止：
+
+1. 将本软件（含其修改版本、衍生版本）用于任何以营利为目的的产品、服务或内部经营系统；
+2. 以本软件为基础提供付费或附带广告、引流、增值服务的网站、应用、SaaS、API 或小程序；
+3. 销售、出租、转售本软件，或将其打包进任何商业发行物、硬件设备；
+4. 在企业或其它组织中用于实际业务运营（含免费试用期结束后的继续使用）；
+5. 使用本软件或其名称、界面设计申请商标、专利、软件著作权登记或申报各类成果。
+
+商业授权申请请通过本仓库 Issues 或作者 GitHub 主页联系。
+
+────────────────────────────────
+三、明确禁止的行为
+────────────────────────────────
+
+无论商业与否，均不得：
+
+1. 移除、篡改本文件或代码中的版权与作者声明；
+2. 将本软件作为自己的原创作品发布，或用于任何学术不端行为；
+3. 用于违反所在地法律法规的用途，包括未经授权录制、传播他人语音内容。
+
+────────────────────────────────
+四、免责声明
+────────────────────────────────
+
+本软件按「现状」提供，不附带任何明示或默示的担保，包括但不限于对适销性、特定用途适用性与不侵权的担保。在任何情况下，作者或著作权人均不对因使用本软件或无法使用本软件而产生的任何索赔、损害或其它责任负责，无论其源于合同、侵权还是其它原因。
+
+本软件中的语音识别、说话人分离与总结功能仅提供辅助结果，可能出错。使用者须自行核验内容，并对录音的合法性、他人隐私与个人信息保护承担全部责任。
+
+────────────────────────────────
+
+English Summary (the Chinese text above prevails; this summary is for reference only)
+
+This is NOT an open-source license. All rights reserved.
+
+You may read, run, modify and share this software free of charge for personal study,
+teaching, research and other NON-COMMERCIAL purposes, provided this LICENSE file and
+the author's copyright notice are kept intact.
+
+Any COMMERCIAL use — including but not limited to paid products or services, SaaS or
+hosted offerings, resale, bundling into commercial distributions, or operational use
+inside a company — requires prior written permission from the copyright holder.
+Contact the author via GitHub Issues.
+
+The software is provided "AS IS", without warranty of any kind. The author shall not be
+liable for any claim, damage or other liability arising from the use of the software.
+Speech recognition and speaker diarization outputs are assistive and may be wrong;
+users are solely responsible for verifying results and for the lawfulness of their
+recordings and the privacy of the people recorded.
