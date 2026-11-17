@@ -46,6 +46,8 @@ export function mountRecord(root, ctx) {
         <div class="live-empty">${T('rec.waiting')}</div>
       </div>
 
+      <div class="asr-hint" id="asrHint" hidden></div>
+
       <div class="status-bar" id="statusBar"></div>
 
       <div class="rec-bottom">
@@ -65,6 +67,7 @@ export function mountRecord(root, ctx) {
   const sceneLabel = $('#sceneLabel', root);
   const stopBtn = $('.stop-btn', root);
   const pauseBtn = $('[data-act="pause"]', root);
+  const hintEl = $('#asrHint', root);
 
   const recorder = new Recorder();
   let rec = null;
@@ -75,7 +78,6 @@ export function mountRecord(root, ctx) {
   let lastEnd = 0;
   let engineMode = ctx.settings.engineMode || 'auto';
   let asrState = 'starting';
-  let asrNote = '';
   let finished = false;
   let paused = false;
   let wakeLock = null;
@@ -171,6 +173,27 @@ export function mountRecord(root, ctx) {
 
   function paintStatus() {
     statusBar.innerHTML = statusHtml();
+  }
+
+  /* 识别不出文字时，把原因说清楚——沉默的空面板是最难自查的失败 */
+  const ASR_HINTS = {
+    network: ['rec.hintNetTitle', 'rec.hintNetBody'],
+    unsupported: ['rec.hintUnsupportedTitle', 'rec.hintUnsupportedBody'],
+    denied: ['rec.hintDeniedTitle', 'rec.hintDeniedBody'],
+    error: ['rec.hintErrorTitle', 'rec.hintErrorBody'],
+    unstable: ['rec.hintUnstableTitle', 'rec.hintUnstableBody'],
+  };
+
+  function paintAsrHint() {
+    if (!hintEl) return;
+    const h = finished ? null : ASR_HINTS[asrState];
+    if (!h) {
+      hintEl.hidden = true;
+      hintEl.innerHTML = '';
+      return;
+    }
+    hintEl.hidden = false;
+    hintEl.innerHTML = `<b>${esc(T(h[0]))}</b><span>${esc(T(h[1]))}</span>`;
   }
 
   const liveSpk = $('#liveSpk', root);
@@ -324,14 +347,15 @@ export function mountRecord(root, ctx) {
       onInterim: ({ text }) => setInterim(text),
       onStatus: (s) => {
         asrState = s.state;
-        if (s.state === 'network') asrNote = T('rec.networkDown');
         trackDown(s.state);
         paintStatus();
+        paintAsrHint();
       },
     });
     asrState = asr.supported ? 'listening' : 'unsupported';
     if (asr.supported) asr.start();
     paintStatus();
+    paintAsrHint();
 
     // 循环
     const loop = () => {
@@ -389,6 +413,7 @@ export function mountRecord(root, ctx) {
   async function finish({ goto = 'doc', silent = false } = {}) {
     if (finished) return;
     finished = true;
+    paintAsrHint();
     clearInterval(heartbeat);
     clearInterval(timerTick);
     cancelAnimationFrame(rafId);
