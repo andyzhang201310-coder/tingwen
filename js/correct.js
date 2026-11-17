@@ -3,7 +3,9 @@
  *
  * 分层设计——每一层都只做“有把握”的修改，并且原始识别文本始终保留：
  *   1) 词库层：内置同音误识词 + 用户自定义词库（错词=对词）
- *   2) 上下文层：本身是合法词、但在录音语境下几乎必然是误识的词（如 测速→测试）
+ *   2) 上下文层：本身是合法词、但在录音语境下几乎必然是误识的词（如 测速→测试）。
+ *      判定范围是「命中词所在的那一句」，不是整段——否则段里随口提一句“录音”，
+ *      就会把全篇的“测速”都改成“测试”。
  *   3) 归一建议：同一份文稿内，低频的同音写法归并到高频写法（只给建议，不自动改）
  *   4) 大模型层：可选，需用户自己配置 OpenAI 兼容接口；结果同样先给建议
  *
@@ -104,12 +106,14 @@ export const BUILTIN_PAIRS = [
   ['性嫩', '性能'], ['依懒', '依赖'], ['排察', '排查'], ['部暑', '部署'],
 ];
 
-/** 上下文规则：左边是合法词，只有在特定语境下才改 */
+/** 上下文规则：左边是合法词，只有在特定语境下才改。
+ *  need / unless 只在「命中位置所在的那一句」里判定（scope: 'sentence'，默认）；
+ *  确实需要通篇判断的规则显式写 scope: 'paragraph'。 */
 export const CONTEXT_RULES = [
   {
     from: '测速', to: '测试',
     need: /(录音|识别|语音|转录|一段|一下|一遍|功能|这个|这段|文件|结果|我们|进行)/,
-    unless: /(测速软件|测速工具|测速网络|测速仪|测速网站|测速结果|测速排行|测速速度|\d\s*(m|M|k|K)?bps)/,
+    unless: /(测速软件|测速工具|测速网络|网络测速|测速仪|测速网站|测速结果|测速排行|测速速度|网速|带宽|下载速度|上传速度|延迟|ping|Ping|PING|\d\s*(m|M|k|K)?bps|\d+\s*兆)/,
     why: '录音语境下“测速”多为“测试”的误识',
   },
   { from: '在说一遍', to: '再说一遍', why: '“在/再”同音' },
@@ -145,6 +149,31 @@ const REPEAT = /([\u4e00-\u9fa5]{1,2})\1{2,}/g;
 
 function isWordChar(ch) {
   return !!ch && /[A-Za-z0-9]/.test(ch);
+}
+
+const SENT_BREAK = /[。！？!?；;\n]/;
+
+/** 取命中位置所在的判定窗口：整句；句子太短（无句读的长句被逗号断开）时左右各扩 60 字 */
+function contextAround(text, at, len, scope) {
+  if (scope === 'paragraph') return text;
+  let start = 0;
+  for (let i = at - 1; i >= 0; i -= 1) {
+    if (SENT_BREAK.test(text[i])) { start = i + 1; break; }
+  }
+  let end = text.length;
+  for (let i = at + len; i < text.length; i += 1) {
+    if (SENT_BREAK.test(text[i])) { end = i; break; }
+  }
+  if (end - start < 8) {
+    start = Math.max(0, at - 60);
+    end = Math.min(text.length, at + len + 60);
+  }
+  return text.slice(start, end);
+}
+
+function matches(re, s) {
+  re.lastIndex = 0;
+  return re.test(s);
 }
 
 function parseLevel(value) {
@@ -223,18 +252,21 @@ export function correctText(raw = '', options = {}) {
     add(i, i + 2, to, 'homophone', text.slice(i, i + 2), '内置同音词库');
   }
 
-  // 3) 上下文规则
+  // 3) 上下文规则（need/unless 按命中处所在句判定，不拿整段做共现）
   if (opts.level !== 'conservative') {
     CONTEXT_RULES.forEach((rule) => {
       if (!text.includes(rule.from)) return;
-      if (rule.need && !rule.need.test(text)) return;
-      if (rule.unless && rule.unless.test(text)) return;
       let idx = 0;
       while (idx <= text.length - rule.from.length) {
         const at = text.indexOf(rule.from, idx);
         if (at < 0) break;
-        add(at, at + rule.from.length, rule.to, 'context', rule.from, rule.why || '上下文规则');
         idx = at + rule.from.length;
+        if (rule.need || rule.unless) {
+          const ctx = contextAround(text, at, rule.from.length, rule.scope);
+          if (rule.need && !matches(rule.need, ctx)) continue;
+          if (rule.unless && matches(rule.unless, ctx)) continue;
+        }
+        add(at, at + rule.from.length, rule.to, 'context', rule.from, rule.why || '上下文规则');
       }
     });
   }
