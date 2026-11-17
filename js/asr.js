@@ -28,17 +28,23 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
   let rapidRestarts = 0;
   let lastStartAt = 0;
   let intentionalStop = false;
+  /* 网络错误的自适应重试：首次 400ms 就重来（一次抖动不该让字幕空等 3 秒），
+     连续失败再逐步退避，避免把服务打得更死 */
+  const RETRY_DELAYS = [400, 900, 1800, 3000];
+  let retryStep = 0;
 
   /** 断网时的重连：不依赖 onend 的快速重启计数，改为带间隔的定时重试 */
-  function scheduleRetry(delay = 3000) {
+  function scheduleRetry(delay) {
+    const wait = delay ?? RETRY_DELAYS[Math.min(retryStep, RETRY_DELAYS.length - 1)];
+    retryStep += 1;
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => {
       if (intentionalStop || api.paused) return;
-      if (navigator.onLine === false) { onStatus?.({ state: 'network' }); scheduleRetry(3000); return; }
+      if (navigator.onLine === false) { onStatus?.({ state: 'network' }); scheduleRetry(delay ?? 3000); return; }
       networkDown = false;
       rapidRestarts = 0;
       try { startOnce(); } catch { /* ignore */ }
-    }, delay);
+    }, wait);
   }
 
   /** 网络恢复：立刻重连，不等下一次重试 */
@@ -46,6 +52,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     if (intentionalStop || api.paused || !api.supported) return;
     networkDown = false;
     rapidRestarts = 0;
+    retryStep = 0;
     clearTimeout(retryTimer);
     try { startOnce(); } catch { /* ignore */ }
   }
@@ -65,6 +72,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     };
 
     r.onresult = (event) => {
+      retryStep = 0;   // 真的收到结果了，退避归零
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const res = event.results[i];
@@ -92,7 +100,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
       if (code === 'network') {
         networkDown = true;
         onStatus?.({ state: 'network' });
-        scheduleRetry(3000);
+        scheduleRetry();   // 自适应：400ms 起，连续失败再退避
         return;
       }
       onStatus?.({ state: 'error', code });
@@ -103,8 +111,10 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
       if (intentionalStop || api.paused) return;
       if (!api.supported) return;
       /* 断网导致的中断交给 scheduleRetry，避免快速重启计数把引擎永久停掉 */
-      if (networkDown) { scheduleRetry(3000); return; }
       const now = performance.now();
+      if (networkDown) { scheduleRetry(); return; }
+      /* 这一轮活得够久说明服务是好的，退避归零，下次抖动可以立刻重连 */
+      if (now - lastStartAt > 4000) retryStep = 0;
       rapidRestarts = now - lastStartAt < 900 ? rapidRestarts + 1 : 0;
       if (rapidRestarts > 6) {
         onStatus?.({ state: 'unstable' });
@@ -134,6 +144,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     api.paused = false;
     networkDown = false;
     rapidRestarts = 0;
+    retryStep = 0;
     clearTimeout(retryTimer);
     if (recog) { try { recog.stop(); } catch { /* ignore */ } }
     startOnce();
