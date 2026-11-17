@@ -3,7 +3,7 @@
  * - 说明：这是 Web 原型可用的实时引擎，能力来自浏览器/系统提供的识别服务，
  *   与文档中 whisper.cpp（本地）和云端实时 API 属于不同实现，接口层保持可替换。
  */
-export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onStatus, onLevel }) {
+export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onStatus, onLevel, idleMs = 20000 }) {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const api = {
     supported: !!SR,
@@ -32,6 +32,37 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
      连续失败再逐步退避，避免把服务打得更死 */
   const RETRY_DELAYS = [400, 900, 1800, 3000];
   let retryStep = 0;
+  /* 看门狗：Chrome 的会话会「静默死亡」——不给 result、不给 error、也不给 end，
+     界面一直显示「识别中」，实际早已不出字（长录音表现为只有开头一句）。
+     一旦整个会话超过 idleMs 没有任何事件，就主动丢掉旧会话、重开一个。
+     注意：本机实测首条结果最晚在 15.5s 才返回，阈值必须明显高于它，
+     否则会在结果到来前把会话掐掉、永远出不了第一句。 */
+  let idleTimer = null;
+  /* 首条结果到来前用 idleMs（要容忍冷启动的十几秒），
+     已经在出字之后只要短时间内没有新结果就可以认定会话卡死，阈值收紧 */
+  const IDLE_BUSY_MS = Math.max(1500, Math.min(8000, Math.round(idleMs * 0.4)));
+
+  function clearIdle() {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
+
+  /** 每收到一次引擎事件就重新计时 */
+  function armIdle(wait = idleMs) {
+    clearIdle();
+    if (intentionalStop || api.paused) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      if (intentionalStop || api.paused) return;
+      const old = recog;
+      recog = null;                    // 先脱钩：旧会话的 onend 不再触发重启
+      try { old?.abort?.() } catch { /* ignore */ }
+      clearTimeout(restartTimer);
+      networkDown = false;
+      retryStep = 0;
+      try { startOnce(); } catch { /* ignore */ }
+    }, wait);
+  }
 
   /** 断网时的重连：不依赖 onend 的快速重启计数，改为带间隔的定时重试 */
   function scheduleRetry(delay) {
@@ -66,13 +97,17 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     r.maxAlternatives = 1;
 
     r.onstart = () => {
+      if (r !== recog) return;         // 已被看门狗/重连替换掉的旧会话，一律不响应
       api.active = true;
       rapidRestarts = 0;
+      armIdle();
       onStatus?.({ state: 'listening' });
     };
 
     r.onresult = (event) => {
+      if (r !== recog) return;
       retryStep = 0;   // 真的收到结果了，退避归零
+      armIdle(IDLE_BUSY_MS);   // 已经在出字：再沉默这么久就判定会话卡死
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const res = event.results[i];
@@ -89,8 +124,14 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     };
 
     r.onerror = (e) => {
+      if (r !== recog) return;
       const code = e.error || 'unknown';
-      if (code === 'no-speech' || code === 'aborted') return;
+      /* 静音超时、被外部打断：都不该让会话就此停摆 */
+      if (code === 'no-speech') { armIdle(IDLE_BUSY_MS); return; }
+      if (code === 'aborted') {
+        if (!intentionalStop && !api.paused) scheduleRetry(300);
+        return;
+      }
       if (code === 'not-allowed' || code === 'service-not-allowed') {
         onStatus?.({ state: 'denied' });
         api.active = false;
@@ -99,15 +140,20 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
       }
       if (code === 'network') {
         networkDown = true;
+        clearIdle();
         onStatus?.({ state: 'network' });
         scheduleRetry();   // 自适应：400ms 起，连续失败再退避
         return;
       }
+      /* 其他错误（音频设备、语言等）：不静默停摆，交给看门狗在 idleMs 后重开 */
       onStatus?.({ state: 'error', code });
+      armIdle();
     };
 
     r.onend = () => {
+      if (r !== recog) return;         // 旧会话的收尾不再驱动重启
       api.active = false;
+      clearIdle();
       if (intentionalStop || api.paused) return;
       if (!api.supported) return;
       /* 断网导致的中断交给 scheduleRetry，避免快速重启计数把引擎永久停掉 */
@@ -134,8 +180,11 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     recog = build();
     try {
       recog.start();
+      armIdle();
     } catch (e) {
       onStatus?.({ state: 'error', code: String(e?.message || e) });
+      /* 启动就被拒（设备被占用、实例状态异常）：别让它成为死路 */
+      if (!intentionalStop && !api.paused) scheduleRetry(600);
     }
   }
 
@@ -145,13 +194,18 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     networkDown = false;
     rapidRestarts = 0;
     retryStep = 0;
+    clearIdle();
     clearTimeout(retryTimer);
-    if (recog) { try { recog.stop(); } catch { /* ignore */ } }
+    /* 先脱钩再停旧会话：否则它的事件会按「当前会话」处理，可能多开一个并行会话 */
+    const old = recog;
+    recog = null;
+    if (old) { try { old.stop(); } catch { /* ignore */ } }
     startOnce();
   }
 
   function pause() {
     api.paused = true;
+    clearIdle();
     clearTimeout(restartTimer);
     clearTimeout(retryTimer);
     try { recog?.stop(); } catch { /* ignore */ }
@@ -170,6 +224,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     intentionalStop = true;
     api.paused = false;
     networkDown = false;
+    clearIdle();
     clearTimeout(restartTimer);
     clearTimeout(retryTimer);
     try { recog?.stop(); } catch { /* ignore */ }
