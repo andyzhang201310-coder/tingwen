@@ -71,7 +71,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => {
       if (intentionalStop || api.paused) return;
-      if (navigator.onLine === false) { onStatus?.({ state: 'network' }); scheduleRetry(delay ?? 3000); return; }
+      if (navigator.onLine === false) { onStatus?.({ state: 'network', attempts: retryStep }); scheduleRetry(delay ?? 3000); return; }
       networkDown = false;
       rapidRestarts = 0;
       try { startOnce(); } catch { /* ignore */ }
@@ -141,7 +141,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
       if (code === 'network') {
         networkDown = true;
         clearIdle();
-        onStatus?.({ state: 'network' });
+        onStatus?.({ state: 'network', attempts: retryStep });
         scheduleRetry();   // 自适应：400ms 起，连续失败再退避
         return;
       }

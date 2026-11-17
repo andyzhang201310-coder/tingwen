@@ -18,6 +18,18 @@ import { mergeRanges, collectGaps, enqueueGaps } from '../repair.js';
 /** folder 用作数据键（写入录音元数据），显示时再按当前语言取名 */
 const SCENES = ['会议', '课堂', '访谈', '备忘'];
 
+/** 实时识别由「浏览器厂商」的服务提供，失败原因和出路随浏览器不同：
+    Chrome 走 Google，Edge 走微软；对 Edge 用户说「改用 Edge」是自相矛盾。 */
+function speechHost() {
+  const ua = navigator.userAgent || '';
+  if (/Edg\//i.test(ua)) return 'edge';
+  if (/Chrome\//i.test(ua) || /Chromium\//i.test(ua)) return 'chrome';
+  return 'other';
+}
+
+/** 网络错误持续多久才值得弹出解释（短暂抖动只让状态栏闪一下，不打断阅读） */
+const NET_HINT_DELAY = 2200;
+
 export function mountRecord(root, ctx) {
   root.innerHTML = `
     <div class="view rec">
@@ -184,9 +196,43 @@ export function mountRecord(root, ctx) {
     unstable: ['rec.hintUnstableTitle', 'rec.hintUnstableBody'],
   };
 
+  /* 网络类提示的正文按浏览器分流：Chrome 是 Google 不通，Edge 是微软服务或代理抖动 */
+  const NET_BODY = {
+    chrome: 'rec.hintNetBody',
+    edge: 'rec.hintNetBodyEdge',
+    other: 'rec.hintNetBodyGeneric',
+  };
+
+  let netDownAt = 0;        // 本轮网络错误第一次出现的时刻
+  let netAttempts = 0;      // 已失败的重试次数（asr 传入）
+  let netHintTimer = null;
+
+  function clearNetHintTimer() {
+    clearTimeout(netHintTimer);
+    netHintTimer = null;
+  }
+
+  /** 到达 NET_HINT_DELAY 时再重画一次，让持续失败自己「长出来」 */
+  function armNetHint() {
+    clearNetHintTimer();
+    if (!netDownAt) return;
+    const left = NET_HINT_DELAY - (Date.now() - netDownAt);
+    if (left <= 0) return;
+    netHintTimer = setTimeout(() => {
+      netHintTimer = null;
+      paintAsrHint();
+    }, left);
+  }
+
   function paintAsrHint() {
     if (!hintEl) return;
-    const h = finished ? null : ASR_HINTS[asrState];
+    let h = finished ? null : ASR_HINTS[asrState];
+    if (h === ASR_HINTS.network) {
+      /* 一次抖动就弹整块解释会打断阅读：至少持续 2.2 秒，或重试已连续失败 2 次，才算「真的连不上」 */
+      const sustained = netAttempts >= 2 || Date.now() - netDownAt >= NET_HINT_DELAY;
+      if (!sustained) h = null;
+      else h = [h[0], NET_BODY[speechHost()] || NET_BODY.chrome];
+    }
     if (!h) {
       hintEl.hidden = true;
       hintEl.innerHTML = '';
@@ -346,6 +392,15 @@ export function mountRecord(root, ctx) {
       onFinal,
       onInterim: ({ text }) => setInterim(text),
       onStatus: (s) => {
+        if (s.state === 'network') {
+          if (!netDownAt) netDownAt = Date.now();
+          netAttempts = s.attempts || 0;
+          armNetHint();
+        } else {
+          netDownAt = 0;
+          netAttempts = 0;
+          clearNetHintTimer();
+        }
         asrState = s.state;
         trackDown(s.state);
         paintStatus();
@@ -413,6 +468,7 @@ export function mountRecord(root, ctx) {
   async function finish({ goto = 'doc', silent = false } = {}) {
     if (finished) return;
     finished = true;
+    clearNetHintTimer();
     paintAsrHint();
     clearInterval(heartbeat);
     clearInterval(timerTick);
