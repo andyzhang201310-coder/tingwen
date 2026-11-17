@@ -163,6 +163,8 @@ export function mountDoc(root, ctx, id) {
       ? suggestMerges(trs.map((t) => t.raw || t.text || ''))
       : [];
     for (const t of trs) {
+      /* 用户点过「全部撤销」：尊重这个决定，不再自动改回去（手动「重扫全文」仍可重来） */
+      if (t.fixReverted) continue;
       if (!t.text || t.edited || t.corrected || (t.corrections && t.corrections.length)) continue;
       const fix = correctText(t.text, { ...opts, extraPairs: merges });
       if (!fix.changed) continue;
@@ -714,6 +716,7 @@ export function mountDoc(root, ctx, id) {
       corrections: t.corrections && t.corrections.length ? t.corrections : null,
       corrected: t.corrected ? 1 : 0,
       raw: t.raw || null,
+      fixReverted: t.fixReverted ? 1 : 0,
       autoFix: true,
     });
   }
@@ -822,7 +825,12 @@ export function mountDoc(root, ctx, id) {
         if (!t) return;
         const next = revertOne(t, Number(ci));
         if (!next) return;
-        await persistFix(t, { ...next, corrected: next.corrections.length ? 1 : 0 });
+        /* 撤到最后一条就等于「这篇不要自动纠错」，标记住，免得重开文稿又被纠回去 */
+        await persistFix(t, {
+          ...next,
+          corrected: next.corrections.length ? 1 : 0,
+          fixReverted: next.corrections.length ? 0 : 1,
+        });
         await load();
         renderAll();
         draw();
@@ -860,7 +868,7 @@ export function mountDoc(root, ctx, id) {
         if (!item || !t) return;
         const next = applyOneFix(t, item.from, item.to, 'llm', item.why);
         if (!next) { toast(T('fix.pairChanged')); return; }
-        await persistFix(t, { ...next, corrected: 1 });
+        await persistFix(t, { ...next, corrected: 1, fixReverted: 0 });
         llmHints.splice(Number(llmBtn.dataset.llm), 1);
         await load();
         renderAll();
@@ -883,7 +891,7 @@ export function mountDoc(root, ctx, id) {
         for (const t of trs) {
           if (!(t.corrections || []).length) continue;
           const raw = t.raw || t.text;
-          await persistFix(t, { text: raw, corrections: null, corrected: 0, raw: null });
+          await persistFix(t, { text: raw, corrections: null, corrected: 0, raw: null, fixReverted: 1 });
         }
         await load();
         renderAll();
@@ -906,10 +914,10 @@ export function mountDoc(root, ctx, id) {
           if (!base) continue;
           const fix = correctText(base, { ...opts, extraPairs: merges });
           if (!fix.changed) {
-            if (t.corrections) await persistFix(t, { text: base, corrections: null, corrected: 0, raw: null });
+            if (t.corrections) await persistFix(t, { text: base, corrections: null, corrected: 0, raw: null, fixReverted: 0 });
             continue;
           }
-          await persistFix(t, { text: fix.text, corrections: fix.corrections, corrected: 1, raw: base });
+          await persistFix(t, { text: fix.text, corrections: fix.corrections, corrected: 1, raw: base, fixReverted: 0 });
           total += fix.count;
         }
         await load();
@@ -929,7 +937,7 @@ export function mountDoc(root, ctx, id) {
           if (!base) continue;
           const fix = correctText(base, opts);
           if (!fix.changed) continue;
-          await persistFix(t, { text: fix.text, corrections: fix.corrections, corrected: 1, raw: base });
+          await persistFix(t, { text: fix.text, corrections: fix.corrections, corrected: 1, raw: base, fixReverted: 0 });
           total += fix.count;
         }
         await load();
