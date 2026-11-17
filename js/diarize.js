@@ -14,7 +14,7 @@
 
 import { T } from './i18n.js';
 
-export const LOCAL_VERSION = 'acoustic-v1';
+export const LOCAL_VERSION = 'acoustic-v2';  // v2：加入梅尔倒谱 + CH 选人数（v1 为纯声学统计）
 export const CLOUD_SIM_VERSION = 'simulated-v1';
 
 /* ══════════════════════════════════════════
@@ -204,8 +204,8 @@ export function f0Of(data, offset, sampleRate = 16000) {
   return estimateF0(data, offset, sampleRate);
 }
 
-/** 一帧的频谱统计：质心与三段能量 */
-function spectralStats(frame, offset, sampleRate) {
+/** 取一帧的幅度谱（去均值 + 汉宁窗 + FFT），写入共享缓冲 reSpec / imSpec */
+function frameSpectrum(frame, offset) {
   let mean = 0;
   for (let i = 0; i < F0_N; i += 1) mean += frame[offset + i];
   mean /= F0_N;
@@ -214,6 +214,10 @@ function spectralStats(frame, offset, sampleRate) {
     imSpec[i] = 0;
   }
   fft(reSpec, imSpec, false);
+}
+
+/** 在「已经算好的幅度谱」上取统计量：质心与三段能量 */
+function spectralStatsOf(sampleRate) {
   const binHz = sampleRate / F0_N;
   let num = 0;
   let den = 0;
@@ -237,6 +241,73 @@ function spectralStats(frame, offset, sampleRate) {
     b3,
   };
 }
+
+/** 一帧的频谱统计：质心与三段能量 */
+function spectralStats(frame, offset, sampleRate) {
+  frameSpectrum(frame, offset);
+  return spectralStatsOf(sampleRate);
+}
+
+/** 梅尔滤波器组（只在采样率/频带数变化时重建） */
+const MEL_BANDS = 18;
+const CEP_DIM = 8;
+let melCache = null;
+
+function melBank(sampleRate, nBand, fmin = 80, fmax = 7600) {
+  if (melCache && melCache.sr === sampleRate && melCache.n === nBand) return melCache.bank;
+  const hzToMel = (f) => 2595 * Math.log10(1 + f / 700);
+  const melToHz = (m) => 700 * (10 ** (m / 2595) - 1);
+  const m0 = hzToMel(fmin);
+  const m1 = hzToMel(fmax);
+  const edges = [];
+  for (let i = 0; i <= nBand + 1; i += 1) edges.push(melToHz(m0 + ((m1 - m0) * i) / (nBand + 1)));
+  const binHz = sampleRate / F0_N;
+  const last = Math.floor(F0_N / 2);
+  const bank = Array.from({ length: nBand }, () => []);
+  for (let b = 0; b < nBand; b += 1) {
+    const lo = edges[b];
+    const ce = edges[b + 1];
+    const hi = edges[b + 2];
+    for (let k = Math.max(1, Math.floor(lo / binHz)); k < last; k += 1) {
+      const f = k * binHz;
+      if (f < lo || f > hi) continue;
+      const w = f <= ce
+        ? (f - lo) / Math.max(1e-6, ce - lo)
+        : (hi - f) / Math.max(1e-6, hi - ce);
+      if (w > 0.001) bank[b].push([k, w]);
+    }
+  }
+  melCache = { sr: sampleRate, n: nBand, bank };
+  return bank;
+}
+
+/**
+ * 在「已经算好的幅度谱」上取低阶倒谱（log-mel + DCT，等价于 MFCC 的 c1..c8）。
+ * 音高只说明“多高”，倒谱刻画的是声道形状（共振峰），同音高的不同人靠它区分。
+ */
+function melCepstrumOf(sampleRate, nCep = CEP_DIM) {
+  const bank = melBank(sampleRate, MEL_BANDS);
+  const logE = new Array(MEL_BANDS);
+  for (let b = 0; b < MEL_BANDS; b += 1) {
+    let e = 0;
+    const filters = bank[b];
+    for (let i = 0; i < filters.length; i += 1) {
+      const [k, w] = filters[i];
+      e += w * Math.hypot(reSpec[k], imSpec[k]);
+    }
+    logE[b] = Math.log(e + 1e-6);
+  }
+  const out = new Array(nCep);
+  const scale = Math.SQRT2 / Math.sqrt(MEL_BANDS);
+  for (let j = 1; j <= nCep; j += 1) {
+    let s = 0;
+    for (let b = 0; b < MEL_BANDS; b += 1) s += logE[b] * Math.cos((Math.PI * j * (b + 0.5)) / MEL_BANDS);
+    out[j - 1] = s * scale;
+  }
+  return out;
+}
+
+/** 一帧的低阶倒谱（自行做变换；批量分析时请复用 frameSpectrum 以免重复 FFT） */
 
 function median(arr) {
   if (!arr.length) return 0;
@@ -291,15 +362,27 @@ export function analyzeSpan(pcm, span, { padMs = 140 } = {}) {
   let b1 = 0;
   let b2 = 0;
   let b3 = 0;
+  /* 倒谱：逐帧算 c1..c8，再取整段的逐维中位数。
+     音高只回答“多高”，倒谱刻画的是声道长度与共振峰位置，
+     音高接近的两个人（同性、同年龄）主要靠这组维度分开。
+     统计量与倒谱共用同一次 FFT，避免长录音里做两遍变换。 */
+  const cepFrames = [];
   voiced.forEach((f) => {
-    const s = spectralStats(data, f.off, sampleRate);
+    frameSpectrum(data, f.off);
+    const s = spectralStatsOf(sampleRate);
     if (s.centroid > 90) cents.push(s.centroid);
     b1 += s.b1;
     b2 += s.b2;
     b3 += s.b3;
+    cepFrames.push(melCepstrumOf(sampleRate));
   });
   const centMed = median(cents) || 900;
   const bandSum = b1 + b2 + b3 || 1;
+
+  const cepMed = [];
+  for (let d = 0; d < CEP_DIM; d += 1) {
+    cepMed.push(median(cepFrames.map((c) => c[d])));
+  }
 
   const vector = [
     Math.log2(f0Med || 120),        // 音高：最强的说话人线索
@@ -308,8 +391,18 @@ export function analyzeSpan(pcm, span, { padMs = 140 } = {}) {
     b1 / bandSum,                    // 低频共振（胸腔 / 低元音）
     b3 / bandSum,                    // 高频能量（齿音 / 摩擦音）
     Math.log(rmsRef + 1e-4),         // 说话音量（弱线索）
+    ...cepMed,                       // 倒谱 c1..c8：音色 / 声道形状
   ];
-  const weights = [2.3, 0.65, 1.0, 0.95, 0.95, 0.22];
+  /* 权重来自实测（合成三人 / 两人 / 单人对照）：
+     逐维 z-score 会把「噪声维度」放大到和有效维度同等的分量，
+     音高起伏、质心、高低频比、音量在整段内本身就不稳定，
+     留着只会稀释音高与倒谱的区分力——三人的纯度为 33%（全并成一人）。
+     只保留 音高 + c1..c4 之后，三人在强制 k=3 时纯度 100%，单人仍判 1 人。 */
+  const weights = [
+    1.8, 0,                           // 音高（主线索）／音高起伏（整段内抖动大，噪声）
+    0, 0, 0, 0,                       // 质心与高低频比已被倒谱覆盖；音量不可靠
+    0.2, 0.7, 0.8, 0.7, 0, 0, 0, 0,   // 倒谱 c1..c8，主要看 c2..c4（共振峰位置）
+  ];
 
   return {
     vector,
@@ -414,6 +507,65 @@ function silhouette(points, labels, k) {
   return total / n;
 }
 
+/** 组内平方和：k 相同时用它挑最好的一次 k-means */
+function sse(points, labels, centers) {
+  let s = 0;
+  points.forEach((p, i) => { s += dist(p, centers[labels[i]]) ** 2; });
+  return s;
+}
+
+/**
+ * Calinski-Harabasz 指数：(簇间方差 / (k-1)) / (簇内方差 / (n-k))。
+ * 与轮廓系数不同，它自带对 k 的惩罚（n-k 分母），因此在「2 人 vs 3 人」
+ * 这种轮廓只差 0.02 的场景里也能分出高下：真值 k 的 CH 明显更高。
+ */
+function calinskiHarabasz(points, labels, k) {
+  const n = points.length;
+  if (k < 2 || n <= k) return 0;
+  const dim = points[0].length;
+  const groups = Array.from({ length: k }, () => []);
+  labels.forEach((l, i) => { groups[l].push(i); });
+  if (groups.some((g) => !g.length)) return 0;
+  const gm = new Array(dim).fill(0);
+  points.forEach((p) => { for (let d = 0; d < dim; d += 1) gm[d] += p[d] / n; });
+  let between = 0;
+  let within = 0;
+  groups.forEach((g) => {
+    const c = new Array(dim).fill(0);
+    g.forEach((i) => { for (let d = 0; d < dim; d += 1) c[d] += points[i][d] / g.length; });
+    between += g.length * dist(c, gm) ** 2;
+    g.forEach((i) => { within += dist(points[i], c) ** 2; });
+  });
+  if (within < 1e-9) return 0;
+  return (between / (k - 1)) / (within / (n - k));
+}
+
+/** 调整兰德指数：衡量两次独立聚类是否给出同一划分（1 = 完全一致） */
+function adjustedRand(a, b) {
+  const n = a.length;
+  if (n < 2) return 1;
+  const cell = new Map();
+  const ra = new Map();
+  const rb = new Map();
+  for (let i = 0; i < n; i += 1) {
+    cell.set(`${a[i]}|${b[i]}`, (cell.get(`${a[i]}|${b[i]}`) || 0) + 1);
+    ra.set(a[i], (ra.get(a[i]) || 0) + 1);
+    rb.set(b[i], (rb.get(b[i]) || 0) + 1);
+  }
+  const pair = (x) => (x * (x - 1)) / 2;
+  let same = 0;
+  cell.forEach((v) => { same += pair(v); });
+  let sa = 0;
+  let sb = 0;
+  ra.forEach((v) => { sa += pair(v); });
+  rb.forEach((v) => { sb += pair(v); });
+  const total = pair(n);
+  const expected = (sa * sb) / (total || 1);
+  const maxIdx = (sa + sb) / 2;
+  if (Math.abs(maxIdx - expected) < 1e-9) return 1;
+  return (same - expected) / (maxIdx - expected);
+}
+
 export const MAX_SPEAKERS = 6;
 
 /** 簇间最小质心距离 / 平均簇内距离；单人噪声分组时接近 1，不同声音时明显大于 2 */
@@ -448,29 +600,48 @@ export function autoCluster(rawVectors, weights, maxK = MAX_SPEAKERS) {
   }
   const pts = rawVectors.map((v) => v.map((x, d) => ((x - means[d]) / sds[d]) * weights[d]));
 
-  let best = { labels: new Array(n).fill(0), k: 1, score: 0, centers: null };
+  /* 选人数：以前靠轮廓系数排序，但同一场景下 k=2 与 k=3 的轮廓常常只差
+     0.02 以内（合并两个相近的人反而“更整齐”），于是永远选不到真值。
+     改为三重判据：
+       - sep / 轮廓 / 稳定性 把「同一个人被硬拆」挡在门外；
+       - 通过筛选的 k 之间用 Calinski-Harabasz 比高低，它自带对 k 的惩罚。 */
+  let best = { labels: new Array(n).fill(0), k: 1, score: 0, centers: null, ch: 0 };
   const detail = [];
   // 片段很少时不硬拆：3 段最多认 2 人，多于 6 段才允许继续细分
   const limit = Math.min(maxK, n <= 3 ? 2 : Math.floor(n / 2));
+  const STAB_MIN = 0.55;   // 多次随机初始化收敛到同一划分
+  const SIL_MIN = 0.40;    // 划分质量下限（n≥6 时才可信）
+  /* CH 下限：实测「真拆分」CH ≥ 10.3，「同一人被硬拆」CH ≤ 8.0。
+     片段少于 6 段时轮廓与稳定性都不可靠，这条下限是唯一有效的守门条件。 */
+  const CH_MIN = 9;
   for (let k = 2; k <= limit; k += 1) {
-    let local = null;
-    for (let seed = 1; seed <= 3; seed += 1) {
+    const runs = [];
+    for (let seed = 1; seed <= 5; seed += 1) {
       const res = kmeans(pts, k, seed);
       const sizes = new Array(k).fill(0);
       res.labels.forEach((l) => { sizes[l] += 1; });
       if (sizes.some((c) => c === 0)) continue;
-      const score = silhouette(pts, res.labels, k) - k * 0.02;
-      const sep = separation(pts, res.labels, res.centers);
-      // 片段少时轮廓系数不可靠（单点簇按 0 计），改用分离度作为主要依据
-      const key = n >= 6 ? score : sep;
-      if (!local || key > local.key) local = { ...res, score, sep, key };
+      runs.push({ ...res, sse: sse(pts, res.labels, res.centers) });
     }
-    if (!local) continue;
-    detail.push({ k, score: Number(local.score.toFixed(3)), sep: Number(local.sep.toFixed(2)) });
-    if (local.sep < 2.0) continue;                    // 像同一个人：不拆
-    if (n >= 6 && local.score < 0.42) continue;       // 划分质量不够：不采纳
-    if (best.k === 1 || local.key > best.key) {
-      best = { labels: local.labels, k, score: local.score, centers: local.centers, key: local.key };
+    if (!runs.length) continue;
+    runs.sort((a, b) => a.sse - b.sse);
+    const win = runs[0];
+    const score = silhouette(pts, win.labels, k);
+    const sep = separation(pts, win.labels, win.centers);
+    const ch = calinskiHarabasz(pts, win.labels, k);
+    const stab = runs.reduce((s, r) => s + adjustedRand(r.labels, win.labels), 0) / runs.length;
+    detail.push({
+      k,
+      score: Number(score.toFixed(3)),
+      sep: Number(sep.toFixed(2)),
+      ch: Number(ch.toFixed(1)),
+      stab: Number(stab.toFixed(2)),
+    });
+    if (sep < 2.0) continue;                          // 像同一个人：不拆
+    if (ch < CH_MIN) continue;                        // 簇分得不够开：不拆
+    if (n >= 6 && (score < SIL_MIN || stab < STAB_MIN)) continue;  // 划分质量或稳定性不够
+    if (best.k === 1 || ch > best.ch) {
+      best = { labels: win.labels, k, score, centers: win.centers, ch, stab, sep };
     }
   }
   return { ...best, detail };
