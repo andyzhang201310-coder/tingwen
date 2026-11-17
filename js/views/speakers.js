@@ -199,10 +199,8 @@ export function mountSpeakers(root, ctx, recordingId) {
   /* ── 试听 ── */
   function preview(startMs, endMs, btn) {
     if (!rec?.audio) { toast(T('doc.noAudio')); return; }
-    if (ctx.currentDocId !== recordingId) {
-      ctx.player.load(rec.audio);
-      ctx.currentDocId = recordingId;
-    }
+    if (!ctx.player.isLoaded(recordingId)) ctx.player.load(rec.audio, recordingId);
+    ctx.currentDocId = recordingId;
     ctx.player.seek(startMs);
     ctx.player.play();
     clearInterval(preview.timer);

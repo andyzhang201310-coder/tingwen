@@ -190,7 +190,7 @@ export function mountHome(root, ctx) {
       ctx.player.pause();
       return;
     }
-    ctx.player.load(rec.audio);
+    ctx.player.load(rec.audio, rec.id);
     ctx.player.seek(0);
     ctx.player.play();
     playingId = id;

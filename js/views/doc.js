@@ -1297,10 +1297,11 @@ export function mountDoc(root, ctx, id) {
     if (act === 'fix') { openFixPanel(); return; }
     if (act === 'play') {
       if (!rec.audio) { toast(T('doc.noAudio')); return; }
-      if (ctx.currentDocId !== id) {
-        ctx.player.load(rec.audio);
-        ctx.currentDocId = id;
-      }
+      /* 只有播放器里装的不是这条录音时才重装。只看 currentDocId 会在
+         「从列表页试听进来」「视图来回切换」这些路径上误判成没装载，
+         一 load 就把 currentTime 清零——表现出来就是点暂停又回到开头。 */
+      if (!ctx.player.isLoaded(rec.id)) ctx.player.load(rec.audio, rec.id);
+      ctx.currentDocId = id;
       ctx.player.toggle();
       return;
     }
@@ -1350,7 +1351,8 @@ export function mountDoc(root, ctx, id) {
       const rect = actEl.getBoundingClientRect();
       const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       if (!rec.audio) return;
-      if (ctx.currentDocId !== id) { ctx.player.load(rec.audio); ctx.currentDocId = id; }
+      if (!ctx.player.isLoaded(rec.id)) ctx.player.load(rec.audio, rec.id);
+      ctx.currentDocId = id;
       ctx.player.seek(ratio * (ctx.player.durationMs || rec.durationMs));
       updateProgress();
     }
@@ -1397,12 +1399,13 @@ export function mountDoc(root, ctx, id) {
     }
     renderAll();
     if (rec.audio) {
-      if (ctx.currentDocId !== id) {
-        ctx.player.load(rec.audio);
-        ctx.currentDocId = id;
+      /* 从列表页试听进来时播放器里已经是这一条了，别再重装——重装会把位置清零 */
+      if (!ctx.player.isLoaded(rec.id)) {
+        ctx.player.load(rec.audio, rec.id);
         ctx.player.seek(0);
-        ctx.player.setRate(1);
       }
+      ctx.currentDocId = id;
+      ctx.player.setRate(1);   // 视图重建后倍速按钮显示的是 1.0×，播放器要跟着归位
       updateProgress();
     }
   })();

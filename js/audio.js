@@ -244,12 +244,22 @@ export class Player {
   constructor(audioEl) {
     this.audio = audioEl;
     this.url = null;
+    this.source = null;   // 当前装载的音频 Blob
+    this.sourceKey = null; // 当前装载的是哪条录音：IndexedDB 读出的 Blob 每次都是新对象，只能按 id 认
+    this.lastPos = 0;     // 最近一次有效播放位置（毫秒）：位置被意外抹掉时用来续上
     this._subs = new Set();
     this.rate = 1;
-    this.audio.addEventListener('timeupdate', () => this.emit('time'));
+    this.audio.addEventListener('timeupdate', () => {
+      if (this.audio.currentTime > 0.15) this.lastPos = this.audio.currentTime * 1000;
+      this.emit('time');
+    });
     this.audio.addEventListener('play', () => this.emit('state'));
     this.audio.addEventListener('pause', () => this.emit('state'));
-    this.audio.addEventListener('ended', () => { this.emit('state'); this.emit('ended'); });
+    this.audio.addEventListener('ended', () => {
+      this.lastPos = 0;   // 播完再点播放应当从头开始，别让位置守卫把尾巴续上
+      this.emit('state');
+      this.emit('ended');
+    });
     this.audio.addEventListener('loadedmetadata', () => this.emit('loaded'));
   }
 
@@ -262,8 +272,19 @@ export class Player {
     this._subs.forEach((cb) => cb(type, this));
   }
 
-  load(blob) {
+  /** 播放器里装的是不是这条录音（按 id 认，不按 Blob 引用——从库里读出来的 Blob 每次都是新对象） */
+  isLoaded(key) {
+    return !!key && this.sourceKey === key;
+  }
+
+  load(blob, key = null) {
+    /* 同一条录音就不要再装一次：重新 load 会把 currentTime 清零，
+       表现就是「点一下暂停，进度回到开头」。 */
+    if (key && key === this.sourceKey) return;
     if (this.url) URL.revokeObjectURL(this.url);
+    this.source = blob || null;
+    this.sourceKey = key || null;
+    this.lastPos = 0;
     this.url = blob ? URL.createObjectURL(blob) : null;
     this.audio.src = this.url || '';
     this.audio.load();
@@ -277,6 +298,12 @@ export class Player {
   get playing() { return !this.audio.paused && !this.audio.ended; }
 
   async play() {
+    /* 兜底：极少数情况下（重新装载音频源、浏览器回收媒体流水线）currentTime 会悄悄回到 0，
+       这时 continue 就变成了「从头播」。用户主动拖动进度条会走 seek() 同步 lastPos，
+       所以这里只在上次位置明显靠后、且播放器又真的停在 0 附近时接管。 */
+    if (this.lastPos > 1200 && this.audio.currentTime < 0.35 && !this.audio.ended) {
+      try { this.audio.currentTime = this.lastPos / 1000; } catch { /* ignore */ }
+    }
     try { await this.audio.play(); } catch (e) { console.warn(e); }
   }
   pause() { this.audio.pause(); }
@@ -285,7 +312,10 @@ export class Player {
   seek(ms) {
     const d = this.durationMs || this.audio.duration * 1000;
     const target = Math.max(0, Math.min(ms, (d || ms) - 30));
-    if (Number.isFinite(target)) this.audio.currentTime = target / 1000;
+    if (Number.isFinite(target)) {
+      this.lastPos = target;   // 这是一次有意的跳转，位置守卫后续不该再把它拉回去
+      this.audio.currentTime = target / 1000;
+    }
   }
 
   nudge(ms) { this.seek(this.currentMs + ms); }
@@ -299,6 +329,9 @@ export class Player {
     this.pause();
     if (this.url) URL.revokeObjectURL(this.url);
     this.url = null;
+    this.source = null;
+    this.sourceKey = null;
+    this.lastPos = 0;
     this.audio.removeAttribute('src');
   }
 }
