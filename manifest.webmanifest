@@ -1,0 +1,16 @@
+{
+  "name": "听文 TingWen · 实时语音转文字",
+  "short_name": "听文",
+  "description": "听文 TingWen：实时语音转文字，录音边录边存，文稿与音频双向定位。",
+  "lang": "zh-CN",
+  "start_url": "./index.html#/",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#08080a",
+  "theme_color": "#0a0a0c",
+  "icons": [
+    { "src": "./assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

@@ -1,0 +1,25 @@
+# 依赖
+node_modules/
+package-lock.json
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# WorkBuddy 本地项目数据（会话记忆、临时脚本），不进仓库
+.workbuddy/
+
+# 本地测试与临时产物
+*.log
+tmp/
+shots/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# 用户录音数据（如有导出）
+*.webm
+*.m4a

@@ -1,0 +1,50 @@
+const S = (inner, extra = '') =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" ${extra}>${inner}</svg>`;
+
+export const icons = {
+  search: S('<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/>'),
+  mic: S('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7"/>'),
+  gear: S('<circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.12a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.12A1.7 1.7 0 0 0 4.68 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.55h.08A1.7 1.7 0 0 0 10.1 3V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15.16 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.45 9v.08c.26.63.86 1.06 1.55 1.07H21a2 2 0 1 1 0 4h-.12a1.7 1.7 0 0 0-1.48 1.03Z"/>'),
+  folder: S('<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.2c.6 0 1.2.3 1.5.8l.9 1.4h7.4A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5Z"/>'),
+  sparkle: S('<path d="M12 3.5l1.6 4.2L18 9.3l-4.4 1.6L12 15.2l-1.6-4.3L6 9.3l4.4-1.6Z"/><path d="M18.5 15.2l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8ZM5.3 14.5l.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5L3.2 16.6l1.5-.6Z"/>'),
+  chevronLeft: S('<path d="m14.5 5-7 7 7 7"/>', 'stroke-width="2"'),
+  chevronRight: S('<path d="m9.5 5 7 7-7 7"/>', 'stroke-width="2"'),
+  chevronDown: S('<path d="m6 9.5 6 6 6-6"/>', 'stroke-width="2"'),
+  heart: S('<path d="M12 20s-7.2-4.6-7.2-9.4A4.2 4.2 0 0 1 12 8a4.2 4.2 0 0 1 7.2 2.6C19.2 15.4 12 20 12 20Z"/>'),
+  heartFill: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 20.4s-7.6-4.9-7.6-9.9A4.5 4.5 0 0 1 12 7.6a4.5 4.5 0 0 1 7.6 2.9c0 5-7.6 9.9-7.6 9.9Z"/></svg>',
+  info: S('<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.6"/>'),
+  more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5.5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="18.5" cy="12" r="1.7"/></svg>',
+  play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.2c0-.9 1-1.4 1.7-.9l9 6.8c.6.5.6 1.4 0 1.8l-9 6.8c-.7.5-1.7 0-1.7-.9Z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="5" width="3.6" height="14" rx="1.4"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.4"/></svg>',
+  stopSquare: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.6"/></svg>',
+  back15: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 5.2a6.9 6.9 0 1 1-6.4 9.5"/><path d="M12 5.2 8.4 8.6M12 5.2l3.4 3.4"/><text x="12" y="15.6" font-size="7.6" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle" font-family="-apple-system,sans-serif">15</text></svg>',
+  fwd15: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 5.2a6.9 6.9 0 1 0 6.4 9.5"/><path d="M12 5.2l3.6 3.4M12 5.2 8.6 8.6"/><text x="12" y="15.6" font-size="7.6" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle" font-family="-apple-system,sans-serif">15</text></svg>',
+  download: S('<path d="M12 4v10M8.2 10.4 12 14.2l3.8-3.8M5 18.5h14"/>'),
+  waveform: S('<path d="M4 10v4M7.5 7v10M11 4.5v15M14.5 8v8M18 6v12M21 10.5v3"/>'),
+  doc: S('<path d="M6.5 3.5h7l5 5v12h-12Z"/><path d="M13.5 3.5v5h5M9 13h6M9 16.5h4.5"/>'),
+  scissors: S('<circle cx="6" cy="7" r="2.2"/><circle cx="6" cy="17" r="2.2"/><path d="M8 8.2 20 17M8 15.8 20 7"/>'),
+  copy: S('<rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 5.5H7A2.5 2.5 0 0 0 4.5 8v7.5"/>'),
+  trash: S('<path d="M4.5 7h15M9.5 7V5h5v2M6.5 7l.8 12h9.4l.8-12M10 10.5v5M14 10.5v5"/>'),
+  check: S('<path d="m5 12.5 4.5 4.5L19 7.5"/>', 'stroke-width="2.2"'),
+  x: S('<path d="m6 6 12 12M18 6 6 18"/>', 'stroke-width="2"'),
+  plus: S('<path d="M12 5v14M5 12h14"/>', 'stroke-width="2"'),
+  edit: S('<path d="M4.5 19.5h4l10-10-4-4-10 10Z"/><path d="m14.5 5.5 4 4"/>'),
+  share: S('<path d="M12 15V4M8.5 7.5 12 4l3.5 3.5M5.5 13v6h13v-6"/>'),
+  clock: S('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
+  translate: S('<path d="M4 6h9M8.5 4v2M10.5 6c0 4-3 7-6.5 8"/><path d="M6 10.5c1.6 2.4 3.6 3.6 6 4.2M12.5 20l3.8-9 3.8 9M14 17h5"/>'),
+  expand: S('<path d="M9 4.5H4.5V9M15 19.5h4.5V15M4.5 15v4.5H9M19.5 9V4.5H15"/>'),
+  restore: S('<path d="M4.5 9A8 8 0 1 1 5 15"/><path d="M4 4.5V9h4.5"/>'),
+  audioFile: S('<path d="M6.5 3.5h11v17h-11Z"/><path d="M9.5 15.5v-4.6l5-1.1v4.4"/><circle cx="9" cy="15.6" r="1.3"/><circle cx="14" cy="14.4" r="1.3"/>'),
+  lock: S('<rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>'),
+  storage: S('<rect x="4" y="5" width="16" height="6" rx="2"/><rect x="4" y="13" width="16" height="6" rx="2"/><path d="M7.5 8h.01M7.5 16h.01"/>'),
+  cloud: S('<path d="M7.5 18.5a4 4 0 0 1-.4-8A5.6 5.6 0 0 1 18 9.6a4.4 4.4 0 0 1-.6 8.9Z"/>'),
+  phone: S('<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 19h2"/>'),
+  bolt: S('<path d="M13.5 2.5 5 13.5h5l-1 8L18 10h-5Z"/>'),
+  list: S('<path d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01"/>'),
+  marker: S('<path d="M6 3.5h12v17l-6-4-6 4Z"/>'),
+  pauseCircle: S('<circle cx="12" cy="12" r="8.5"/><path d="M10.5 9.5v5M13.5 9.5v5"/>'),
+};
+
+export function svg(name) {
+  return icons[name] || '';
+}

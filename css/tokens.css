@@ -1,0 +1,109 @@
+/* 听文 TingWen · 设计令牌
+   深色为默认（对齐 界面参考1），浅色对齐 界面参考2/3 */
+
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "Roboto Mono", Menlo, Consolas, monospace;
+
+  --r-xs: 10px;
+  --r-sm: 14px;
+  --r-md: 18px;
+  --r-lg: 24px;
+  --r-xl: 30px;
+  --r-pill: 999px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #08080a;
+  --bg-page: #0b0b0e;
+  --surface: #141417;
+  --surface-2: #1c1c21;
+  --surface-3: #24242a;
+  --line: rgba(255, 255, 255, 0.075);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --text: #f6f6f7;
+  --text-2: #a1a1ab;
+  --text-3: #6c6c77;
+  --accent: #ff9f0a;
+  --accent-2: #ff8a1f;
+  --accent-ink: #1a1206;
+  --accent-soft: rgba(255, 159, 10, 0.13);
+  --accent-line: rgba(255, 159, 10, 0.35);
+  --red: #ff453a;
+  --red-soft: rgba(255, 69, 58, 0.16);
+  --green: #32d74b;
+  --green-soft: rgba(50, 215, 75, 0.14);
+  --yellow: #ffd60a;
+  --blue: #0a84ff;
+  --purple: #bf5af2;
+  --wave-bg-a: #3b1109;
+  --wave-bg-b: #1b0705;
+  --wave-bar: #ff8f45;
+  --wave-bar-dim: rgba(255, 143, 69, 0.22);
+  --wave-playhead: #ff3b30;
+  --shadow-sheet: 0 -20px 60px rgba(0, 0, 0, 0.6);
+  --shadow-card: 0 12px 32px rgba(0, 0, 0, 0.35);
+  --switch-off: #3a3a42;
+  --scrollbar: rgba(255, 255, 255, 0.16);
+  /* 发言人色标（同一序号在深浅色下都保持可辨识） */
+  --spk-0: #ff9f0a;
+  --spk-1: #5aa9ff;
+  --spk-2: #45d97a;
+  --spk-3: #c98bf5;
+  --spk-4: #4fd8e8;
+  --spk-5: #ff7a90;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f2f2f6;
+  --bg-page: #e6e6ec;
+  --surface: #ffffff;
+  --surface-2: #eaeaf1;
+  --surface-3: #dedee6;
+  --line: rgba(0, 0, 0, 0.07);
+  --line-strong: rgba(0, 0, 0, 0.14);
+  --text: #0c0c0e;
+  --text-2: #6f6f79;
+  --text-3: #9c9ca6;
+  --accent: #f08c00;
+  --accent-2: #e07800;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(240, 140, 0, 0.12);
+  --accent-line: rgba(240, 140, 0, 0.32);
+  --red: #ff3b30;
+  --red-soft: rgba(255, 59, 48, 0.1);
+  --green: #34c759;
+  --green-soft: rgba(52, 199, 89, 0.12);
+  --yellow: #e0a800;
+  --blue: #007aff;
+  --purple: #af52de;
+  --wave-bg-a: #fff2ea;
+  --wave-bg-b: #fde9e0;
+  --wave-bar: #e8603c;
+  --wave-bar-dim: rgba(232, 96, 60, 0.3);
+  --wave-playhead: #ff3b30;
+  --shadow-sheet: 0 -20px 60px rgba(38, 30, 20, 0.16);
+  --shadow-card: 0 10px 28px rgba(30, 25, 20, 0.07);
+  --switch-off: #e2e2e7;
+  --scrollbar: rgba(0, 0, 0, 0.18);
+  --spk-0: #e07800;
+  --spk-1: #0a6fd0;
+  --spk-2: #1f9d4c;
+  --spk-3: #9b3fd0;
+  --spk-4: #0d8fa3;
+  --spk-5: #d43a5c;
+}

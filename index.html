@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#0a0a0c" />
+  <meta name="apple-mobile-web-app-title" content="听文" />
+  <meta name="application-name" content="听文 TingWen" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>听文 TingWen · 实时语音转文字</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./assets/icon.svg" />
+  <link rel="stylesheet" href="./css/tokens.css" />
+  <link rel="stylesheet" href="./css/app.css" />
+  <link rel="stylesheet" href="./css/views.css" />
+</head>
+<body>
+  <div class="shell">
+    <main id="app" class="app" aria-live="polite"></main>
+    <div id="toast-root" class="toast-root"></div>
+    <div id="sheet-root" class="sheet-root" hidden>
+      <div class="sheet-backdrop" data-sheet-close></div>
+      <div class="sheet" role="dialog" aria-modal="true">
+        <div class="sheet-grab"></div>
+        <div class="sheet-body"></div>
+      </div>
+    </div>
+  </div>
+  <audio id="global-audio" preload="metadata"></audio>
+  <script>
+    if (location.protocol === 'file:') {
+      document.addEventListener('DOMContentLoaded', function () {
+        document.body.innerHTML = '<div style="max-width:520px;margin:18vh auto;padding:0 28px;font:15px/1.8 -apple-system,\'PingFang SC\',sans-serif;color:#e8e8ea;text-align:center">'
+          + '<h1 style="font-size:24px;margin-bottom:14px">请通过本地服务器打开<br><span style="font-size:17px;font-weight:600">Open via a local server</span></h1>'
+          + '<p style="color:#a1a1ab">浏览器不允许 file:// 页面使用麦克风与 ES Module。<br><span style="font-size:13.5px">Browsers block microphone access and ES modules on file:// pages.</span><br>在项目目录执行 / Run in the project folder:</p>'
+          + '<pre style="margin:16px 0;padding:12px 16px;background:#16161a;border-radius:10px;color:#ff9f0a;text-align:left">python serve.py</pre>'
+          + '<p style="color:#a1a1ab">然后访问 / then open http://127.0.0.1:8778/</p></div>';
+      });
+    }
+  </script>
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>
