@@ -104,6 +104,12 @@ export function mountSettings(root, ctx) {
         ${row({ icon: 'phone', label: T('set.theme'), value: current(THEMES(), s.theme), act: 'theme' })}
         ${row({ icon: 'bolt', label: T('set.mode'), value: current(MODES(), s.transcribeMode), act: 'mode' })}
         ${row({ icon: 'cloud', label: T('set.engine'), value: current(ENGINES(), s.engineMode), act: 'engine' })}
+        ${row({
+          icon: 'cloud',
+          label: T('set.asrCloud'),
+          value: s.asrCloudUrl ? T('set.configured') : T('set.notConfigured'),
+          act: 'asr-cloud',
+        })}
       </div>
 
       <div class="group">
@@ -231,6 +237,7 @@ export function mountSettings(root, ctx) {
       return;
     }
     if (act === 'diar-cloud') { openDiarCloud(); return; }
+    if (act === 'asr-cloud') { openAsrCloud(); return; }
     if (act === 'spk-data') { openSpeakerData(); return; }
     if (act === 'llm') { openLLM(); return; }
     if (act === 'correct-level') {
@@ -311,6 +318,47 @@ export function mountSettings(root, ctx) {
       close();
       await render();
       toast(T('set.diarSaved'));
+    });
+  }
+
+  function openAsrCloud() {
+    const box = document.createElement('div');
+    box.innerHTML = `
+      <p class="sheet-desc">${T('set.asrCloudHint')}</p>
+      <label class="set-field"><span>${T('set.asrCloudUrl')}</span>
+        <input class="dict-input" id="acUrl" placeholder="https://api.openai.com/v1/audio/transcriptions" value="${esc(s.asrCloudUrl || '')}" /></label>
+      <label class="set-field"><span>${T('set.asrCloudKey')}</span>
+        <input class="dict-input" id="acKey" type="password" placeholder="••••" value="${esc(s.asrCloudKey || '')}" /></label>
+      <label class="set-field"><span>${T('set.asrCloudModel')}</span>
+        <input class="dict-input" id="acModel" placeholder="whisper-1" value="${esc(s.asrCloudModel || 'whisper-1')}" /></label>
+      ${toggle({
+        icon: 'restore',
+        label: T('set.repairAuto'),
+        key: 'repairAuto',
+        sub: s.repairAuto === false ? '' : T('set.repairAutoSub'),
+      })}
+      <p class="hint">${T('set.asrCloudWarn')}</p>
+      <button class="btn-primary" id="acSave" style="margin-top:14px">${T('common.save')}</button>`;
+    const close = openSheet({ title: T('set.asrCloud'), content: box });
+    box.addEventListener('click', (e) => {
+      const sw = e.target.closest('.switch');
+      if (!sw) return;
+      const on = sw.getAttribute('aria-checked') !== 'true';
+      sw.setAttribute('aria-checked', String(on));
+      s.repairAuto = on;
+      const hintEl = $('.set-sub', box);
+      if (hintEl) hintEl.style.display = on ? '' : 'none';
+    });
+    $('#acSave', box).addEventListener('click', async () => {
+      ctx.settings = await setSettings({
+        asrCloudUrl: $('#acUrl', box).value.trim(),
+        asrCloudKey: $('#acKey', box).value.trim(),
+        asrCloudModel: $('#acModel', box).value.trim() || 'whisper-1',
+        repairAuto: s.repairAuto !== false,
+      });
+      close();
+      await render();
+      toast(T('set.asrCloudSaved'));
     });
   }
 

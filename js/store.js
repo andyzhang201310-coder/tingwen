@@ -1,16 +1,18 @@
-import { uid } from './util.js';
+import { uid, sha256Short } from './util.js';
 
 /* 产品名从「语记」改为「听文 TingWen」，库名同步更换；
    旧库 yuji_db 里的录音会在首次打开时自动迁移过来，不丢数据。 */
 const DB_NAME = 'tingwen_db';
 const LEGACY_DB_NAME = 'yuji_db';
-/* v2：新增说话人识别与身份管理相关表（对应技术规范第 8 章） */
-const DB_VERSION = 2;
+/* v2：新增说话人识别与身份管理相关表（对应技术规范第 8 章）
+   v3：新增 asrJobs（未识别区间的补处理队列，对应产品文档 8.2「断网恢复」） */
+const DB_VERSION = 3;
 const STORES = [
   'recordings', 'segments', 'transcripts', 'meta',
   'speakers', 'speakerAssignments', 'speakerMerges',
   'diarizationTasks', 'diarizationResults',
   'meetingSummaries', 'speakerSummaries', 'summarySources', 'actionItems',
+  'asrJobs',
 ];
 
 /** 设置默认值（对应文档 2.x / 7.x 与 界面参考3） */
@@ -42,6 +44,11 @@ export const DEFAULT_SETTINGS = {
   diarSimCloud: true,         // 未配置云端接口时，用本机结果模拟云端（仅用于验证双引擎融合）
   diarCloudUrl: '',           // 云端分离接口（POST，返回统一结果结构）
   diarCloudKey: '',
+  /* 补识别（断网恢复后对已录音频重跑识别） */
+  asrCloudUrl: '',            // OpenAI 兼容的 /audio/transcriptions 或自建接口
+  asrCloudKey: '',
+  asrCloudModel: 'whisper-1',
+  repairAuto: true,           // 网络恢复后自动补识别（需已配置云端识别接口）
 };
 
 let dbPromise = null;
@@ -101,6 +108,11 @@ function createStores(db) {
   if (!db.objectStoreNames.contains('actionItems')) {
     const s = db.createObjectStore('actionItems', { keyPath: 'id' });
     s.createIndex('recordingId', 'recordingId');
+  }
+  if (!db.objectStoreNames.contains('asrJobs')) {
+    const s = db.createObjectStore('asrJobs', { keyPath: 'id' });
+    s.createIndex('recordingId', 'recordingId');
+    s.createIndex('status', 'status');
   }
 }
 
@@ -266,6 +278,8 @@ export async function restoreRecording(id) {
 export async function purgeRecording(id) {
   const segs = await db.byIndex('segments', 'recordingId', id);
   await Promise.all(segs.map((s) => db.del('segments', s.id)));
+  const jobs = await db.byIndex('asrJobs', 'recordingId', id);
+  await Promise.all(jobs.map((j) => db.del('asrJobs', j.id)));
   const trs = await db.byIndex('transcripts', 'recordingId', id);
   await Promise.all(trs.map((t) => db.del('transcripts', t.id)));
   await purgeSpeakerData(id);
@@ -317,6 +331,35 @@ export async function clearSegments(recordingId) {
   await Promise.all(segs.map((s) => db.del('segments', s.id)));
 }
 
+/**
+ * 分段完整性自检（产品文档 8.2「分段完整性：时间连续、文件可读、校验通过」）
+ * 重算每个分段的校验和与写入时比对，并检查相邻分段时间轴是否连续。
+ */
+export async function verifySegments(recordingId) {
+  const segs = await listSegments(recordingId);
+  const bad = [];
+  const holes = [];
+  for (let i = 0; i < segs.length; i += 1) {
+    const s = segs[i];
+    const actual = s.blob ? await sha256Short(s.blob) : '';
+    if (!s.blob) {
+      bad.push({ index: s.index, reason: 'missing', stored: s.checksum || '', actual: '' });
+    } else if (s.checksum && actual && actual !== s.checksum) {
+      bad.push({ index: s.index, reason: 'mismatch', stored: s.checksum, actual });
+    }
+    if (i > 0 && s.startMs - segs[i - 1].endMs > 1500) {
+      holes.push({ after: segs[i - 1].index, from: segs[i - 1].endMs, to: s.startMs });
+    }
+  }
+  return {
+    total: segs.length,
+    bytes: segs.reduce((n, s) => n + (s.size || 0), 0),
+    bad,
+    holes,
+    ok: segs.length > 0 && !bad.length && !holes.length,
+  };
+}
+
 /* ───────── 转录段 ───────── */
 
 export async function addTranscript(t) {
@@ -331,7 +374,9 @@ export async function addTranscript(t) {
     speakerId: t.speakerId || null,
     speakerConfidence: t.speakerConfidence ?? null,
     speakerSource: t.speakerSource || 'automatic', // automatic | manual | imported
+    speakerEngine: t.speakerEngine || null,         // local | cloud | local+cloud：谁给的归属
     speakerLocked: t.speakerLocked ? 1 : 0,         // 1 = 人工确认锁定，自动结果不得覆盖
+    source: t.source || 'live',                     // live | repair | import：这段文字从哪来
     edited: t.edited ? 1 : 0,
     rev: t.rev || 1,
     original: t.original || null,
@@ -613,6 +658,53 @@ export async function updateActionItem(id, patch) {
   const next = { ...cur, ...patch };
   await db.put('actionItems', next);
   return next;
+}
+
+/* ───────── 补识别任务队列（断网恢复后对已录音频重跑识别） ───────── */
+
+export const ASR_JOB_STATUS = ['pending', 'processing', 'completed', 'failed', 'skipped'];
+
+/**
+ * 记录一段「未被识别覆盖」的音频区间。
+ * kind: gap（识别中断导致的丢失区间）| tail（结尾未识别的尾巴）
+ */
+export async function addAsrJob(job) {
+  const row = {
+    id: job.id || uid('job'),
+    recordingId: job.recordingId,
+    kind: job.kind || 'gap',
+    startMs: Math.round(job.startMs || 0),
+    endMs: Math.round(job.endMs || 0),
+    status: ASR_JOB_STATUS.includes(job.status) ? job.status : 'pending',
+    attempts: job.attempts || 0,
+    reason: job.reason || '',       // 未能补处理的原因（noCloud / noAudio / http401…）
+    text: job.text || '',
+    transcriptIds: job.transcriptIds || [],
+    createdAt: job.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  };
+  await db.put('asrJobs', row);
+  return row;
+}
+
+export async function listAsrJobs(recordingId) {
+  const rows = await db.byIndex('asrJobs', 'recordingId', recordingId);
+  return rows.sort((a, b) => a.startMs - b.startMs);
+}
+
+export async function updateAsrJob(id, patch) {
+  const cur = await db.get('asrJobs', id);
+  if (!cur) return null;
+  const next = { ...cur, ...patch, updatedAt: Date.now() };
+  await db.put('asrJobs', next);
+  return next;
+}
+
+export async function clearAsrJobs(recordingId, { keepOpen = true } = {}) {
+  const rows = await listAsrJobs(recordingId);
+  const drop = keepOpen ? rows.filter((r) => r.status === 'completed' || r.status === 'skipped') : rows;
+  await Promise.all(drop.map((r) => db.del('asrJobs', r.id)));
+  return drop.length;
 }
 
 /* ───────── 设置 ───────── */

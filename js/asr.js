@@ -23,9 +23,33 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
 
   let recog = null;
   let restartTimer = null;
+  let retryTimer = null;
+  let networkDown = false;
   let rapidRestarts = 0;
   let lastStartAt = 0;
   let intentionalStop = false;
+
+  /** 断网时的重连：不依赖 onend 的快速重启计数，改为带间隔的定时重试 */
+  function scheduleRetry(delay = 3000) {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      if (intentionalStop || api.paused) return;
+      if (navigator.onLine === false) { onStatus?.({ state: 'network' }); scheduleRetry(3000); return; }
+      networkDown = false;
+      rapidRestarts = 0;
+      try { startOnce(); } catch { /* ignore */ }
+    }, delay);
+  }
+
+  /** 网络恢复：立刻重连，不等下一次重试 */
+  function handleOnline() {
+    if (intentionalStop || api.paused || !api.supported) return;
+    networkDown = false;
+    rapidRestarts = 0;
+    clearTimeout(retryTimer);
+    try { startOnce(); } catch { /* ignore */ }
+  }
+  window.addEventListener('online', handleOnline);
 
   function build() {
     const r = new SR();
@@ -66,7 +90,9 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
         return;
       }
       if (code === 'network') {
+        networkDown = true;
         onStatus?.({ state: 'network' });
+        scheduleRetry(3000);
         return;
       }
       onStatus?.({ state: 'error', code });
@@ -76,10 +102,13 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
       api.active = false;
       if (intentionalStop || api.paused) return;
       if (!api.supported) return;
+      /* 断网导致的中断交给 scheduleRetry，避免快速重启计数把引擎永久停掉 */
+      if (networkDown) { scheduleRetry(3000); return; }
       const now = performance.now();
       rapidRestarts = now - lastStartAt < 900 ? rapidRestarts + 1 : 0;
       if (rapidRestarts > 6) {
         onStatus?.({ state: 'unstable' });
+        scheduleRetry(8000);   // 不永久停掉：间隔重试，避免录音还在继续却没有识别
         return;
       }
       restartTimer = setTimeout(() => {
@@ -103,6 +132,9 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
   function start() {
     intentionalStop = false;
     api.paused = false;
+    networkDown = false;
+    rapidRestarts = 0;
+    clearTimeout(retryTimer);
     if (recog) { try { recog.stop(); } catch { /* ignore */ } }
     startOnce();
   }
@@ -110,6 +142,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
   function pause() {
     api.paused = true;
     clearTimeout(restartTimer);
+    clearTimeout(retryTimer);
     try { recog?.stop(); } catch { /* ignore */ }
   }
 
@@ -117,13 +150,17 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
     if (!api.paused) return;
     api.paused = false;
     intentionalStop = false;
+    networkDown = false;
+    rapidRestarts = 0;
     startOnce();
   }
 
   function stop() {
     intentionalStop = true;
     api.paused = false;
+    networkDown = false;
     clearTimeout(restartTimer);
+    clearTimeout(retryTimer);
     try { recog?.stop(); } catch { /* ignore */ }
     recog = null;
     api.active = false;
@@ -131,6 +168,7 @@ export function createASR({ lang = 'zh-CN', getElapsed, onFinal, onInterim, onSt
 
   function destroy() {
     stop();
+    window.removeEventListener('online', handleOnline);
     onStatus = null;
   }
 

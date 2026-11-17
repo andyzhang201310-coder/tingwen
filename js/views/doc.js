@@ -18,6 +18,7 @@ import {
 import {
   loadSpeakerView, speakerName, runDiarization, reassignSegments, createEmptySpeaker,
 } from '../speakers.js';
+import { pendingSummary, runRepair, canRepair, repairReasonText } from '../repair.js';
 import { createSpeakerTabs } from './doc-speaker-tabs.js';
 
 export function mountDoc(root, ctx, id) {
@@ -38,6 +39,7 @@ export function mountDoc(root, ctx, id) {
       <div class="scroll doc-scroll" id="docScroll">
         <section class="takeaways" id="takeaways"></section>
         <div id="spkBanner"></div>
+        <div id="repairBar"></div>
 
         <div class="doc-tabs">
           <button class="doc-tab active" data-tab="transcript">${T('doc.tabTranscript')}</button>
@@ -83,6 +85,7 @@ export function mountDoc(root, ctx, id) {
   const scrollEl = $('#docScroll', root);
   const editBar = $('#editBar', root);
   const bannerEl = $('#spkBanner', root);
+  const repairBar = $('#repairBar', root);
 
   let rec = null;
   let trs = [];
@@ -103,6 +106,8 @@ export function mountDoc(root, ctx, id) {
   let llmBusy = false;
   let spk = { speakers: [], byId: new Map(), groups: new Map(), tasks: [], unknownCount: 0, unconfirmed: 0 };
   let tabsApi = null;
+  /* 未识别区间（补识别）：count=待处理段数，totalMs=合计时长 */
+  let repair = { count: 0, totalMs: 0, running: false, reason: '' };
 
   const colorOf = (s) => `c${((s?.color ?? 0) % 6 + 6) % 6}`;
 
@@ -117,6 +122,13 @@ export function mountDoc(root, ctx, id) {
     }
     analysis = analyze(trs);
     spk = await loadSpeakerView(id);
+    const sum = await pendingSummary(id).catch(() => null);
+    repair = {
+      count: sum?.count || 0,
+      totalMs: sum?.totalMs || 0,
+      running: false,
+      reason: sum?.failed?.[0]?.reason || '',
+    };
     return true;
   }
 
@@ -161,6 +173,64 @@ export function mountDoc(root, ctx, id) {
         ? `<ul class="tk-list">${bullets.map((b) => `<li data-jump="${b.startMs}">${esc(b.text)}</li>`).join('')}</ul>`
         : `<p class="tk-empty">${trs.length ? T('doc.pointsShort') : T('doc.noTranscript')}</p>`}
       ${tags.length ? `<div class="tk-chips">${tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}`;
+  }
+
+  /* ── 渲染：未识别区间（补识别入口，对应产品文档 8.2「断网恢复」） ── */
+  function renderRepairBar() {
+    if (!repairBar) return;
+    if (!repair.count || viewing !== 'transcript') { repairBar.innerHTML = ''; return; }
+    const ready = canRepair(ctx.settings);
+    const hint = repair.reason ? ` · ${repairReasonText(repair.reason)}` : '';
+    repairBar.innerHTML = `
+      <div class="repair-bar">
+        <span class="repair-icon">${icons.info}</span>
+        <div class="repair-main">
+          <b>${esc(T('repair.barTitle', { n: repair.count }))}</b>
+          <span>${esc(T('repair.barSub', { dur: fmtDur(repair.totalMs) }))}${esc(hint)}</span>
+        </div>
+        <button class="ghost accent repair-btn" data-act="repair" ${repair.running ? 'disabled' : ''}>
+          ${repair.running ? esc(T('repair.running')) : esc(T('repair.action'))}
+        </button>
+      </div>
+      ${ready ? '' : `<p class="repair-tip">${esc(T('repair.needConfigShort'))}</p>`}`;
+  }
+
+  async function doRepair() {
+    if (repair.running) return;
+    if (!canRepair(ctx.settings)) {
+      const node = document.createElement('div');
+      node.innerHTML = `
+        <p class="sheet-desc">${esc(T('repair.needConfig'))}</p>
+        <div class="sheet-actions">
+          <button class="sheet-action" data-open-set>${icons.gear}<span>${esc(T('repair.openSettings'))}</span></button>
+        </div>`;
+      const close = openSheet({ title: T('repair.title'), desc: T('repair.desc'), content: node });
+      node.addEventListener('click', (e) => {
+        if (!e.target.closest('[data-open-set]')) return;
+        close();
+        ctx.navigate('#/settings');
+      });
+      return;
+    }
+    repair.running = true;
+    renderRepairBar();
+    const res = await runRepair(id, {
+      settings: ctx.settings,
+      onProgress: (p) => {
+        const b = $('[data-act="repair"]', root);
+        if (b) b.textContent = `${T('repair.running')} ${p.index + 1}/${p.total}`;
+      },
+    });
+    repair.running = false;
+    await load();
+    renderTakeaways();
+    renderBanner();
+    renderRepairBar();
+    renderToolbar();
+    if (viewing === 'transcript') renderParas();
+    if (res.ok) toast(T('repair.done', { n: res.added }));
+    else if (res.reason === 'nothing') toast(T('repair.none'));
+    else toast(T('repair.failed', { reason: repairReasonText(res.reason) }));
   }
 
   /* ── 渲染：发言人横幅 ── */
@@ -793,6 +863,14 @@ export function mountDoc(root, ctx, id) {
           <span class="tag">${esc((rec.mime || 'audio').split(';')[0])}</span>
         </div>
         ${rec.bookmarks?.length ? `<div class="hint" style="margin-top:10px">${T('doc.bookmarks')}：${rec.bookmarks.map((b) => fmtClock(b.ms, false)).join(' · ')}</div>` : ''}
+        ${rec.integrity
+          ? `<div class="hint" style="margin-top:8px">${T('doc.integrityLine', {
+            n: rec.integrity.segments,
+            result: rec.integrity.ok
+              ? T('doc.integrityOk')
+              : T('doc.integrityBad', { bad: rec.integrity.bad, holes: rec.integrity.holes }),
+          })}</div>`
+          : ''}
       </div>
       <div class="sheet-actions" style="margin-top:10px">
         <button class="sheet-action" data-a="rename">${icons.edit}<span>${T('common.rename')}</span></button>
@@ -865,6 +943,7 @@ export function mountDoc(root, ctx, id) {
     if (opts.changed) {
       await load();
       renderBanner();
+      renderRepairBar();
       renderToolbar();
       if (viewing === 'transcript') renderParas();
       return;
@@ -915,6 +994,7 @@ export function mountDoc(root, ctx, id) {
       if (speakerId) toast(T('spk.assigned'));
       await load();
       renderBanner();
+      renderRepairBar();
       renderToolbar();
       renderParas();
     });
@@ -949,6 +1029,7 @@ export function mountDoc(root, ctx, id) {
     $('[data-act="fav"]', root).style.color = rec.favorite ? 'var(--red)' : '';
     renderTakeaways();
     renderBanner();
+    renderRepairBar();
     renderToolbar();
     syncTabUI();
     renderBody();
@@ -1018,6 +1099,7 @@ export function mountDoc(root, ctx, id) {
 
     if (act === 'back') { ctx.player.pause(); ctx.navigate('#/'); return; }
     if (act === 'identify') { await identify(); return; }
+    if (act === 'repair') { await doRepair(); return; }
     if (act === 'speakers') { ctx.player.pause(); ctx.navigate(`#/speakers/${id}`); return; }
     if (act === 'fav') {
       rec.favorite = !rec.favorite;

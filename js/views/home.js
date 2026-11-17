@@ -3,7 +3,7 @@ import { icons } from '../icons.js';
 import { toast, openSheet, confirmDialog } from '../ui.js';
 import {
   listRecordings, createRecording, updateRecording, softDeleteRecording,
-  purgeRecording, listSegments, clearSegments, db,
+  purgeRecording, listSegments, clearSegments, verifySegments, db,
 } from '../store.js';
 import { peaksFromFile } from '../audio.js';
 import { statusOf, defaultTitle, folderLabel } from '../model.js';
@@ -365,6 +365,11 @@ export function mountHome(root, ctx) {
   async function recover(id) {
     const segs = await listSegments(id);
     if (!segs.length) { toast(T('home.noSegments')); return; }
+    /* 先自检再拼装：校验和不符或时间轴断裂时明确告知，不假装恢复成功（产品文档 8.2） */
+    const check = await verifySegments(id).catch(() => null);
+    if (check && !check.ok && check.bad.length) {
+      toast(T('home.recoverBroken', { bad: check.bad.length, holes: check.holes.length }));
+    }
     toast(T('home.merging'));
     const blob = new Blob(segs.map((s) => s.blob), { type: segs[0].blob?.type || 'audio/webm' });
     let peaks = [];
@@ -377,6 +382,9 @@ export function mountHome(root, ctx) {
       durationMs: duration,
       endedAt: Date.now(),
       peaks,
+      integrity: check
+        ? { segments: check.total, ok: check.ok, bad: check.bad.length, holes: check.holes.length }
+        : null,
     });
     await clearSegments(id);
     toast(T('home.recovered'));

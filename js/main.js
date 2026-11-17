@@ -9,6 +9,7 @@ import { mountTrash } from './views/trash.js';
 import { mountSpeakers } from './views/speakers.js';
 import { createDemoRecording } from './demo.js';
 import { runDiarization } from './speakers.js';
+import { autoRepair } from './repair.js';
 import { setLang, T } from './i18n.js';
 
 const app = document.getElementById('app');
@@ -146,8 +147,19 @@ async function applyAutoDelete() {
   }
 }
 
-window.addEventListener('online', () => {
+window.addEventListener('online', async () => {
   if (location.hash === '#/record') toast(T('sys.online'));
+  /* 网络恢复后自动补识别（产品文档 8.2：恢复网络后可补处理未完成区间） */
+  try {
+    const recs = await listRecordings();
+    const res = await autoRepair({ settings: ctx.settings, recordings: recs });
+    if (res.added) {
+      toast(T('repair.done', { n: res.added }));
+      ctx.currentView?.refresh?.();
+    }
+  } catch (err) {
+    console.warn('自动补识别失败', err);
+  }
 });
 window.addEventListener('offline', () => {
   toast(T('sys.offline'));

@@ -283,11 +283,14 @@ html[data-theme="light"] .wave-badge { color: rgba(105, 62, 42, 0.75); }
 .live-empty { color: var(--text-3); font-size: 13px; }
 
 .status-bar {
-  display: flex; align-items: center; justify-content: center; gap: 10px;
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+  gap: 6px 10px;
   padding: 10px 20px 0;
   font-size: 11.5px; color: var(--text-3);
 }
-.status-bar .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--text-3); }
+/* 每一项整体不拆行：窄屏宁可折成两行，也不要「自动模/式」这种竖排 */
+.status-bar > span { white-space: nowrap; }
+.status-bar .sep { flex: 0 0 auto; width: 3px; height: 3px; border-radius: 50%; background: var(--text-3); }
 
 .rec-bottom {
   display: flex; align-items: center; justify-content: space-between;
@@ -1248,4 +1251,33 @@ html[data-theme="light"] .wave-badge { color: rgba(105, 62, 42, 0.75); }
   font-size: 11px; color: var(--accent);
   padding: 2px 7px; border-radius: 5px;
   background: var(--accent-soft);
+}
+
+/* ── 补识别（未识别区间） ── */
+.status-bar b.warn { color: var(--accent); font-weight: 600; }
+
+.repair-bar {
+  display: flex; align-items: center; gap: 10px;
+  margin: 12px 18px 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--accent-soft, rgba(255, 159, 10, 0.12));
+  border: 1px solid var(--line);
+}
+.repair-icon { display: flex; color: var(--accent); flex: 0 0 auto; }
+.repair-icon svg { width: 18px; height: 18px; }
+.repair-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.repair-main b { font-size: 13px; font-weight: 600; color: var(--text); }
+.repair-main span { font-size: 11px; color: var(--text-3); line-height: 1.4; }
+.repair-btn {
+  flex: 0 0 auto;
+  height: 30px; padding: 0 12px;
+  font-size: 12px; font-weight: 600;
+  white-space: nowrap;
+}
+.repair-btn[disabled] { opacity: 0.55; }
+.repair-tip {
+  margin: 6px 20px 0;
+  font-size: 11px; line-height: 1.5;
+  color: var(--text-3);
 }

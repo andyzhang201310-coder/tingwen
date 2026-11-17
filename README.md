@@ -39,9 +39,37 @@ python serve.py          # 然后打开 http://127.0.0.1:8778/
 - **心跳**：每 4 秒把 `durationMs / size` 写回录音主记录，异常退出后仍能显示时长。
 - **异常恢复**：启动时扫描 `status = recording` 的记录，若存在分段则在首页给出「恢复录音 / 丢弃」。
 - **录音与识别解耦**：识别停止、报错、断网都不影响采集与落盘；状态栏如实显示「识别服务不可用 · 音频继续保存」。
-- **收尾校验**：结束时合并分段 → 生成主音频 → 计算波形 → 清理分段 → 标记 `saved`。
+- **积压可见**：识别中断（network / error / unstable）与结尾未覆盖的音频会被记成窗口，状态栏实时显示「待识别 N 段 · mm:ss」，不让用户以为全都转好了。
+- **断网补识别**：这些窗口在结束时写入 `asrJobs` 队列；配置云端转写接口后，可在文稿页一键补齐，或由「网络恢复」事件自动触发。逐条结果都带 `source = repair`，可与实时识别区分。
+- **收尾校验**：结束时合并分段 → 生成主音频 → 计算波形 → **重算每段 checksum 并检查时间轴连续性** → 清理分段 → 标记 `saved`；自检结果写进录音记录的 `integrity` 字段，可在文稿「信息」里查看。
 - **离开保护**：`beforeunload` 拦截；浏览器后退时自动结束并保存，不静默丢音频。
-- **其他**：录音期间申请 Screen Wake Lock；`navigator.onLine` 变化即时提示；显示已捕获体积与分段数。
+- **其他**：录音期间申请 Screen Wake Lock；`navigator.onLine` 变化即时刷新状态栏；显示已捕获体积与分段数。
+
+## 未识别区间与补识别
+
+断网时录音不会停，但那段时间没有文字。默认不说「已全部识别」，而是把缺口当成一等公民：
+
+| 环节 | 做法 |
+| --- | --- |
+| 记缺口 | 识别进入 `network / error / unstable / unsupported / denied` 时开窗，恢复 listening 时闭窗；结尾超过 5 秒没有新转录也算未覆盖；与已有转录区间做差集，小于 1.2 秒的碎片丢弃 |
+| 提示 | 录音页状态栏「待识别 N 段 · mm:ss」；文稿页顶部一条琥珀色提示条，写明段数与总时长 |
+| 队列 | 结束时写入 `asrJobs`（`pending / processing / completed / failed / skipped`），同一区间重复入队会被 60% 重叠判定挡掉 |
+| 补齐 | 按区间切音频 → 编码 16 kHz 单声道 WAV → POST 到你配置的接口 → 结果作为新转录写入，`source = repair` |
+| 触发 | 文稿页手动「补识别」；或「网络恢复」事件自动跑（需在设置里打开） |
+
+**为什么必须配置云端接口**：浏览器自带的实时识别只能听麦克风，没法回放已录音频。所以未配置时点「补识别」会明确告诉你去配置，而不是假装补齐。接口约定与 OpenAI 的 `/audio/transcriptions` 兼容：
+
+```
+POST <你的地址>
+Authorization: Bearer <key>        // 填了 key 才带
+Content-Type: multipart/form-data
+  file=clip.wav  model=whisper-1  language=zh  response_format=json  start_ms  end_ms
+
+200 → { "text": "..." }                          或
+      { "segments": [{ "startMs": 0, "endMs": 3200, "text": "..." }] }
+```
+
+**已知边界**：MediaRecorder 的分段只有第一段带容器头，中间段无法单独解码，所以补识别会把整段音频解码一次再切片——超过 20 分钟不自动执行（16 kHz Float32 约 3.84 MB/分钟），只标注原因。要支持超长录音，得换成分段可独立解码的容器（如原生版的 m4a 分段）。
 
 ## AI 纠错（识别错误自动纠正）
 
@@ -68,7 +96,7 @@ python serve.py          # 然后打开 http://127.0.0.1:8778/
 
 界面语言在「设置 → 通用 → 界面语言」里切换（中文 / English / 跟随系统），选中后立即重建当前视图，不刷新页面、不丢正在看的内容。
 
-- **两套语言，一套代码**：所有界面文案集中在 `js/i18n.js`，视图里只写 `T('home.tabAll')` 这样的 key；中英各 551 条，缺 key 会自动回退中文并在控制台暴露，不会渲染出 `undefined`。
+- **两套语言，一套代码**：所有界面文案集中在 `js/i18n.js`，视图里只写 `T('home.tabAll')` 这样的 key；中英各 584 条，缺 key 会自动回退中文并在控制台暴露，不会渲染出 `undefined`。
 - **界面语言 ≠ 识别语言**：`uiLang` 决定菜单和提示语，`lang` 决定语音识别用哪种语言。说中文但用英文界面是完全正常的组合。
 - **不只是标签**：状态文案（录音中 / 已保存 · 云端识别）、日期（今天 · 16:13 → Today · 16:13，跨年时 Nov 17, 2025）、导出文件里的「要点 / 文稿」标题、内置文件夹与场景名、错误提示、确认框默认按钮都做了本地化。
 - **用户数据不翻译**：录音标题、文稿正文、词库词条、文件夹自定义名都原样保留，因为它们属于用户，不属于界面。
@@ -174,7 +202,7 @@ speakerLocked            1 = 人工锁定，自动结果不得覆盖
 | `transcripts` | 转录段 | `recordingId, startMs, endMs, text, engine, status(interim/final/edited), speakerId, speakerConfidence, speakerSource, speakerEngine, speakerLocked, edited, rev, original, raw, corrections, corrected` |
 | `meta` | 设置 | `key='settings'` |
 
-说话人识别（库版本 2，`DB_VERSION = 2`，旧库原地升级、不丢数据）：
+说话人识别（库版本 2 起，当前 `DB_VERSION = 3`，旧库原地升级、不丢数据）：
 
 | store | 用途 | 关键字段 |
 | --- | --- | --- |
@@ -187,8 +215,11 @@ speakerLocked            1 = 人工锁定，自动结果不得覆盖
 | `speakerSummaries` | 按人员总结 | `recordingId, speakerId, generator, dataVersion, payload{keyPoints,questions,suggestions,decisions,commitments}` |
 | `summarySources` | 总结条目 → 原句（强制溯源） | `recordingId, summaryId, kind(meeting/speaker), section, index, transcriptId, startMs` |
 | `actionItems` | 待办 | `recordingId, speakerId, text, ownerId, ownerName, ownerConfirmed, dueText, status(open/done), transcriptId, startMs` |
+| `asrJobs` | 补识别队列（v3 新增） | `recordingId, kind(gap/tail), startMs, endMs, status(pending/processing/completed/failed/skipped), attempts, reason, text, transcriptIds` |
 
-删除单条录音时，上述 9 张表按 `recordingId` 级联清理，并把转录段的说话人字段复位；`speakers` 均带 `recordingId` 索引，`speakerAssignments` 另带 `transcriptId` 索引。
+删除单条录音时，上述 10 张表按 `recordingId` 级联清理，并把转录段的说话人字段复位；`speakers` 均带 `recordingId` 索引，`speakerAssignments` 另带 `transcriptId` 索引，`asrJobs` 另带 `status` 索引。
+
+录音对象新增两个只读字段：`integrity`（分段数、是否校验通过、坏段数与时间断裂数）与 `pending`（待补识别的段数与总时长）。
 
 录音对象里的 `audio` 只在结束时写入；过程中只有 `segments`，与文档「先落盘再识别」的原则一致。分离任务只在 `status = saved` 之后入队，所以任何分离失败都不会影响录音本身。
 
@@ -199,7 +230,7 @@ index.html
 css/      tokens.css（设计令牌，深浅双主题）· app.css（基础组件）· views.css（各页面）
 js/
   main.js         路由、主题、全局播放器、启动流程
-  store.js        IndexedDB 封装与仓储方法（v2：录音 / 转录 / 说话人 / 总结 13 张表）
+  store.js        IndexedDB 封装与仓储方法（v3：录音 / 转录 / 说话人 / 总结 / 补识别 14 张表）
   audio.js        Recorder（采集/分段/电平/逐帧回调）、Player、波形采样
   asr.js          浏览器实时识别封装 + 时间戳估算
   ai.js           本机规则：要点/待办/问题/关键词
@@ -228,7 +259,7 @@ assets/icon.svg  manifest.webmanifest  sw.js（离线外壳）
 | 大模型纠错 | 可选接入（OpenAI 兼容） | 默认关闭；用户填接口与 Key 后才可用，请求由浏览器直连，不经过中间服务 |
 | 多语言（i18n 框架） | 自建轻量双语层 | 只有中英两套词条，没有引入 i18next；Flutter 版可换成 `flutter_localizations` + ARB，key 命名可直接复用 |
 
-已知限制：Web 端单次可录时长受浏览器内存与配额约束，长录音（小时级）应以原生版为准；本文档要求的 2 小时基线需在 Flutter 版本上做真机验证。
+已知限制：Web 端单次可录时长受浏览器内存与配额约束，长录音（小时级）应以原生版为准；本文档要求的 2 小时基线需在 Flutter 版本上做真机验证。补识别同样受此限制——超过 20 分钟的录音不解码补处理，只标记原因（详见上节）。
 
 ## 建议的下一步
 

@@ -3,7 +3,7 @@ import { icons } from '../icons.js';
 import { toast, openSheet, confirmDialog, renderWave, timerHtml } from '../ui.js';
 import {
   createRecording, updateRecording, addSegment, clearSegments,
-  addTranscript, purgeRecording, listTranscripts,
+  addTranscript, purgeRecording, listTranscripts, verifySegments,
 } from '../store.js';
 import { Recorder } from '../audio.js';
 import { createASR, estimateSpan } from '../asr.js';
@@ -13,6 +13,7 @@ import { T } from '../i18n.js';
 import { correctText, optionsFromSettings, renderTextWithFixes } from '../correct.js';
 import { LiveSpeakerTracker } from '../live-speaker.js';
 import { runDiarization } from '../speakers.js';
+import { mergeRanges, collectGaps, enqueueGaps } from '../repair.js';
 
 /** folder 用作数据键（写入录音元数据），显示时再按当前语言取名 */
 const SCENES = ['会议', '课堂', '访谈', '备忘'];
@@ -87,6 +88,9 @@ export function mountRecord(root, ctx) {
   let fixOpts = optionsFromSettings(ctx.settings);
   let tracker = null;
   let liveIdx = null;
+  /* 识别中断窗口：断网 / 引擎异常期间录到的音频没有任何转录，记下来供补识别 */
+  let downWindows = [];
+  let openDown = null;
 
   /* ── 界面更新 ── */
   function winInfo() {
@@ -119,10 +123,19 @@ export function mountRecord(root, ctx) {
     rulerEl.innerHTML = html;
   }
 
+  /** 当前未被识别覆盖的区间（识别中断窗口 + 结尾尾巴），录音页实时展示 */
+  function liveGaps() {
+    const t = Math.round(recorder.elapsed);
+    const wins = downWindows.map((w) => ({ ...w }));
+    if (openDown && asrState !== 'paused') wins.push({ startMs: openDown.startMs, endMs: t });
+    if (t - lastEnd > 5000) wins.push({ startMs: Math.max(lastEnd, 0), endMs: t });
+    return mergeRanges(wins).filter((g) => g.endMs - g.startMs > 1200);
+  }
+
   function statusHtml() {
     const parts = [];
     const modeText = engineMode === 'local' ? T('rec.modeLocal') : engineMode === 'cloud' ? T('rec.modeCloud') : T('rec.modeAuto');
-    parts.push(`${modeText}`);
+    parts.push(esc(modeText));
     const stateMap = {
       listening: T('rec.stateListening'),
       starting: T('rec.stateStarting'),
@@ -133,14 +146,21 @@ export function mountRecord(root, ctx) {
       error: T('rec.stateError'),
       paused: T('rec.statePaused'),
     };
-    parts.push(stateMap[asrState] || T('rec.stateListening'));
-    if (!navigator.onLine) parts.push(T('rec.offline'));
+    parts.push(esc(stateMap[asrState] || T('rec.stateListening')));
+    if (!navigator.onLine) parts.push(esc(T('rec.offline')));
     const segBytes = recorder.segments.reduce((n, x) => n + x.blob.size, 0);
     const bufBytes = (recorder._buffer || []).reduce((n, b) => n + b.size, 0);
-    parts.push(T('rec.captured', { size: fmtBytes(segBytes + bufBytes), n: recorder.segments.length }));
-    if (ctx.settings.autoCorrect !== false && fixCount > 0) parts.push(T('rec.fixes', { n: fixCount }));
-    if (saveError) parts.push(saveError);
-    return parts.map((p, i) => `${i ? '<i class="sep"></i>' : ''}<span>${esc(p)}</span>`).join('');
+    parts.push(esc(T('rec.captured', { size: fmtBytes(segBytes + bufBytes), n: recorder.segments.length })));
+    if (ctx.settings.autoCorrect !== false && fixCount > 0) parts.push(esc(T('rec.fixes', { n: fixCount })));
+    /* 积压：有多少段音频没有对应文字（产品文档 2.1「显示积压或待处理状态」） */
+    const gaps = liveGaps();
+    if (gaps.length) {
+      const ms = gaps.reduce((n, g) => n + (g.endMs - g.startMs), 0);
+      const dur = `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`;
+      parts.push(`<b class="warn">${esc(T('rec.pendingSum', { n: gaps.length, dur }))}</b>`);
+    }
+    if (saveError) parts.push(esc(saveError));
+    return parts.map((p, i) => `${i ? '<i class="sep"></i>' : ''}<span>${p}</span>`).join('');
   }
 
   function setBadge(isPaused) {
@@ -201,6 +221,11 @@ export function mountRecord(root, ctx) {
   async function onFinal({ text, at }) {
     if (!rec) return;
     const { startMs, endMs } = estimateSpan(text, at, lastEnd);
+    /* 状态一直显示 listening 但长时间没有结果时，也把这段算作缺口 */
+    if (openDown && startMs - openDown.startMs > 1200) {
+      downWindows.push({ startMs: openDown.startMs, endMs: startMs });
+      openDown = null;
+    }
     lastEnd = endMs;
     const fix = fixOpts.on ? correctText(text, fixOpts) : null;
     const shown = fix?.changed ? fix.text : text;
@@ -225,6 +250,25 @@ export function mountRecord(root, ctx) {
       saveError = T('rec.saveTranscriptFailed');
       paintStatus();
     }
+  }
+
+  /* 识别不可用的状态：这些区间里录到的音频没有任何转录，记成待补识别 */
+  const DOWN_STATES = ['network', 'error', 'unstable', 'unsupported', 'denied'];
+
+  function trackDown(state) {
+    if (paused) return;
+    if (DOWN_STATES.includes(state)) {
+      if (!openDown) openDown = { startMs: Math.round(recorder.elapsed) };
+    } else if (state === 'listening' && openDown) {
+      downWindows.push({ startMs: openDown.startMs, endMs: Math.round(recorder.elapsed) });
+      openDown = null;
+    }
+  }
+
+  function closeDownWindow() {
+    if (!openDown) return;
+    downWindows.push({ startMs: openDown.startMs, endMs: Math.round(recorder.elapsed) });
+    openDown = null;
   }
 
   /* ── 启动 ── */
@@ -281,6 +325,7 @@ export function mountRecord(root, ctx) {
       onStatus: (s) => {
         asrState = s.state;
         if (s.state === 'network') asrNote = T('rec.networkDown');
+        trackDown(s.state);
         paintStatus();
       },
     });
@@ -347,7 +392,8 @@ export function mountRecord(root, ctx) {
     clearInterval(heartbeat);
     clearInterval(timerTick);
     cancelAnimationFrame(rafId);
-    asr?.stop();
+    closeDownWindow();
+    asr?.destroy();
     try { await wakeLock?.release(); } catch { /* 忽略 */ }
 
     let result = null;
@@ -363,6 +409,11 @@ export function mountRecord(root, ctx) {
     const autoTitle = suggestTitle(trs) || rec.title;
     const keepAudio = ctx.settings.saveRecording;
 
+    /* 分段完整性自检：重算校验和 + 时间轴连续性（产品文档 8.2） */
+    const integrity = await verifySegments(rec.id).catch(() => null);
+    /* 未识别区间：识别中断窗口 + 结尾尾巴，去掉已被文字覆盖的部分 */
+    const gaps = collectGaps({ windows: downWindows, transcripts: trs, durationMs: duration });
+
     await updateRecording(rec.id, {
       status: 'saved',
       hasTranscript: trs.length > 0,
@@ -374,10 +425,20 @@ export function mountRecord(root, ctx) {
       mime: result?.mime || rec.mime,
       engineUsed: 'browser',
       title: autoTitle || defaultTitle(),
+      integrity: integrity
+        ? { segments: integrity.total, ok: integrity.ok, bad: integrity.bad.length, holes: integrity.holes.length }
+        : null,
+      pending: { count: gaps.length, totalMs: gaps.reduce((n, g) => n + (g.endMs - g.startMs), 0) },
     });
+    if (gaps.length && keepAudio) await enqueueGaps(rec.id, gaps);
     await clearSegments(rec.id);
 
     if (!silent) toast(keepAudio ? T('rec.saved') : T('rec.savedTextOnly'));
+    if (integrity && !integrity.ok) {
+      toast(T('rec.integrityBad', { bad: integrity.bad.length, holes: integrity.holes.length }));
+    } else if (gaps.length && keepAudio) {
+      toast(T('rec.pendingTip', { n: gaps.length }));
+    }
 
     if (ctx.settings.autoCopy && trs.length) {
       const text = trs.map((t) => t.text).join('\n');
@@ -444,7 +505,7 @@ export function mountRecord(root, ctx) {
     clearInterval(heartbeat);
     clearInterval(timerTick);
     cancelAnimationFrame(rafId);
-    asr?.stop();
+    asr?.destroy();
     recorder.abort();
     try { await wakeLock?.release(); } catch { /* 忽略 */ }
     if (rec) await purgeRecording(rec.id);
@@ -471,6 +532,7 @@ export function mountRecord(root, ctx) {
         asr?.pause();
         paused = true;
         asrState = 'paused';
+        closeDownWindow();   // 暂停期间不录音，这段不算缺口
         pauseBtn.innerHTML = icons.play;
         setBadge(true);
         paintLiveSpeaker(null);
@@ -542,11 +604,18 @@ export function mountRecord(root, ctx) {
   };
   window.addEventListener('beforeunload', beforeUnload);
 
+  /* 网络状态变化要立刻反映到状态栏，否则断网恢复后仍显示旧状态 */
+  const onNet = () => { if (!finished) paintStatus(); };
+  window.addEventListener('online', onNet);
+  window.addEventListener('offline', onNet);
+
   boot();
 
   return {
     destroy() {
       window.removeEventListener('beforeunload', beforeUnload);
+      window.removeEventListener('online', onNet);
+      window.removeEventListener('offline', onNet);
       if (!finished) {
         // 路由离开（浏览器后退等）：自动结束并保存，避免丢音频
         finish({ goto: 'none', silent: true });
