@@ -18,13 +18,52 @@ export function haptic(ms = 8) {
   if (navigator.vibrate) navigator.vibrate(ms);
 }
 
+/* 吞掉紧随其后的那一次 click。
+   长按弹菜单后手指抬起，浏览器仍会补发一次 click；它会落在刚出现的遮罩上把菜单关掉，
+   或落在列表行上跳进详情页。这里在捕获阶段拦掉，正常轻点不受影响。 */
+let swallowClickUntil = 0;
+let swallowBound = false;
+
+export function swallowNextClick(ms = 320) {
+  if (!swallowBound) {
+    swallowBound = true;
+    document.addEventListener('click', (e) => {
+      if (Date.now() < swallowClickUntil) {
+        swallowClickUntil = 0;
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    }, true);
+  }
+  swallowClickUntil = Date.now() + ms;
+}
+
 /* ── Sheet ─────────────────────────────── */
 let sheetCloser = null;
+let sheetSeq = 0;        // 每开一张表自增，用来作废上一张表还没跑完的关闭动画
+let sheetCloseTimer = 0;
+let sheetOnClose = null; // 当前表的 onClose，被新表顶掉时补发一次，避免 await 永久挂起
+let sheetClosing = false;
 
 export function openSheet({ title, desc, actions = [], content = null, onClose = null }) {
   const root = document.getElementById('sheet-root');
   if (!root) return;
   const body = root.querySelector('.sheet-body');
+
+  /* 上一张表可能正处在 210ms 关闭动画里（典型场景：动作表里点“删除”→ 立刻弹确认框）。
+     必须清掉它的定时器，否则回调会把刚打开的新表重新 hidden、还会把确认结果当成取消。
+     若上一张表还活着却被顶掉，补发一次 onClose，保证 confirmDialog/choiceSheet 的 Promise 不会悬空。 */
+  if (sheetCloseTimer) { clearTimeout(sheetCloseTimer); sheetCloseTimer = 0; }
+  if (sheetOnClose) {
+    const pending = sheetOnClose;
+    sheetOnClose = null;
+    try { pending(); } catch { /* 忽略旧表的回调异常 */ }
+  }
+  sheetSeq += 1;
+  const seq = sheetSeq;
+  sheetOnClose = onClose;
+  sheetClosing = false;
+
   root.classList.remove('is-closing');
   body.innerHTML = '';
 
@@ -44,7 +83,7 @@ export function openSheet({ title, desc, actions = [], content = null, onClose =
           ${a.icon ? icons[a.icon] || '' : ''}<span>${esc(a.label)}</span>
         </button>`);
       btn.addEventListener('click', async () => {
-        closeSheet();
+        close(); // 只关自己这张表，回调里若又开了新表也不会被误关
         if (a.onClick) await a.onClick();
       });
       wrap.appendChild(btn);
@@ -53,23 +92,34 @@ export function openSheet({ title, desc, actions = [], content = null, onClose =
   }
 
   root.hidden = false;
-  sheetCloser = () => {
+
+  function close() {
+    if (seq !== sheetSeq || sheetClosing) return; // 已被新表取代或已关闭
+    sheetClosing = true;
+    sheetCloseTimer && clearTimeout(sheetCloseTimer);
     root.classList.add('is-closing');
-    setTimeout(() => {
+    sheetCloseTimer = setTimeout(() => {
+      sheetCloseTimer = 0;
+      if (seq !== sheetSeq) return; // 动画期间换表了，交给新表处理
       root.hidden = true;
       root.classList.remove('is-closing');
-      if (onClose) onClose();
+      const fn = sheetOnClose;
+      sheetOnClose = null;
+      if (fn) fn();
     }, 210);
-  };
+  }
+
+  sheetCloser = close;
   root.querySelectorAll('[data-sheet-close]').forEach((b) => {
     b.onclick = () => closeSheet();
   });
-  return closeSheet;
+  return close;
 }
 
 export function closeSheet() {
-  if (sheetCloser) sheetCloser();
+  const closer = sheetCloser;
   sheetCloser = null;
+  if (closer) closer();
 }
 
 export function confirmDialog({ title, message, confirmText = T('common.confirm'), cancelText = T('common.cancel'), danger = false }) {

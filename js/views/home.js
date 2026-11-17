@@ -1,6 +1,6 @@
 import { $, $$, esc, fmtDate, fmtDur, dateGroupLabel, debounce, fmtBytes, sameDay } from '../util.js';
 import { icons } from '../icons.js';
-import { toast, openSheet, confirmDialog } from '../ui.js';
+import { toast, openSheet, confirmDialog, swallowNextClick } from '../ui.js';
 import {
   listRecordings, createRecording, updateRecording, softDeleteRecording,
   purgeRecording, listSegments, clearSegments, verifySegments, db,
@@ -309,12 +309,16 @@ export function mountHome(root, ctx) {
   // 长按删除
   let pressTimer = null;
   let pressId = null;
+  let pressFired = false;
+
   root.addEventListener('pointerdown', (e) => {
     const row = e.target.closest('.rec-row');
     if (!row) return;
     pressId = row.dataset.id;
+    pressFired = false;
     pressTimer = setTimeout(async () => {
       pressTimer = null;
+      pressFired = true;
       const rec = all.find((r) => r.id === pressId);
       if (!rec) return;
       openSheet({
@@ -339,9 +343,14 @@ export function mountHome(root, ctx) {
       });
     }, 520);
   });
-  ['pointerup', 'pointercancel', 'pointermove'].forEach((ev) => {
+  root.addEventListener('pointerup', () => {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    if (pressFired) { pressFired = false; swallowNextClick(); }
+  });
+  ['pointercancel', 'pointermove'].forEach((ev) => {
     root.addEventListener(ev, () => {
       if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+      if (ev === 'pointercancel') pressFired = false;
     });
   });
 
