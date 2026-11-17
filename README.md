@@ -29,7 +29,8 @@ python serve.py          # 然后打开 http://127.0.0.1:8778/
 | 中英双语（新增） | 全界面中文 / English / 跟随系统，设置里切换即时生效；状态、日期、导出模板、内置场景一并本地化 |
 | 音频与文字联动（7.3） | 点段落跳转到对应 `start_ms`；播放时高亮当前段并自动滚动；±15 秒、倍速、波形拖动 |
 | 识别纠错（新增，P0+） | 四层纠错：同音词库 / 上下文规则 / 同音归一建议 / 可选大模型；原文完整保留，修复处可见、可逐条撤销 |
-| AI 智能整理（P1 预览） | 要点 / 待办 / 问题 / 关键词为**本机规则抽取**，界面明确标注「本机规则」，不冒充大模型结果 |
+| AI 智能整理（P1） | 按场景整理：**会议**（议题/讨论/决策/未决/待办）、**课堂**（章节/知识点/重点/复习提纲）、**访谈**（问答对/关键陈述/待跟进）、**备忘**（要点/提醒）；默认本机规则抽取，可选大模型重写，界面标注来源 |
+| 摘要与翻译（P1） | 每份纪要顶部一段话摘要 + 主题词；全文可译成英/中/日/韩，**只在点了翻译才外发**，译文独立存储、不改原文，可随时关掉只看原文 |
 | 说话人识别与身份管理（P1，新增） | 本机声学分离 + 云端接口双引擎，统一结果模型与融合；会议内 Speaker ID、改名/合并/撤销、逐段与连续段重指派、人工锁定不被覆盖；按人员纪要与待办，**每条都可回溯到原句**。详见下文专章 |
 | 同步与账号 | 未实现，按文档建议「第一版本地优先」 |
 
@@ -96,13 +97,52 @@ Content-Type: multipart/form-data
 
 界面语言在「设置 → 通用 → 界面语言」里切换（中文 / English / 跟随系统），选中后立即重建当前视图，不刷新页面、不丢正在看的内容。
 
-- **两套语言，一套代码**：所有界面文案集中在 `js/i18n.js`，视图里只写 `T('home.tabAll')` 这样的 key；中英各 584 条，缺 key 会自动回退中文并在控制台暴露，不会渲染出 `undefined`。
+- **两套语言，一套代码**：所有界面文案集中在 `js/i18n.js`，视图里只写 `T('home.tabAll')` 这样的 key；中英各 628 条，缺 key 会自动回退中文并在控制台暴露，不会渲染出 `undefined`。
 - **界面语言 ≠ 识别语言**：`uiLang` 决定菜单和提示语，`lang` 决定语音识别用哪种语言。说中文但用英文界面是完全正常的组合。
 - **不只是标签**：状态文案（录音中 / 已保存 · 云端识别）、日期（今天 · 16:13 → Today · 16:13，跨年时 Nov 17, 2025）、导出文件里的「要点 / 文稿」标题、内置文件夹与场景名、错误提示、确认框默认按钮都做了本地化。
 - **用户数据不翻译**：录音标题、文稿正文、词库词条、文件夹自定义名都原样保留，因为它们属于用户，不属于界面。
 - **品牌**：中文界面用「听文 / TINGWEN」，英文界面用「TingWen / 听文」，主副标随语言对调。
 
 边界：演示记录的文稿内容是中文示例（来自产品文档场景），切到英文界面只翻译界面本身，不会翻译示例文稿——那属于录音内容。
+
+## 智能整理与翻译
+
+对应产品文档 2 章「AI 智能整理（P1）」与 2.3「后续 AI 功能」。这一块有两套产出：**结构化纪要**（会议 / 课堂 / 访谈 / 备忘）与**译文**，二者都遵守同一条底线——不编、可回链、用户点才动。
+
+### 1. 四个场景，一套底线
+
+| 场景 | 结构 | 触发 |
+| --- | --- | --- |
+| 会议 | 摘要 · 议题 · 讨论要点 · 已确认决策 · 未解决问题 · 各方观点 · 待办 | 默认 |
+| 课堂 | 摘要 · 章节（按停顿切，单章最多 6 句）· 知识点 · 重点与考点 · 复习提纲 · 作业 | 文件夹为课堂/讲座/课程 |
+| 访谈 | 摘要 · 问答对 · 关键陈述 · 待跟进 · 待办 | 文件夹为访谈/采访 |
+| 备忘 | 摘要 · 要点 · 提醒 · 待办 | 文件夹为备忘/速记 |
+
+场景在「AI 纪要」顶部随时可切，切换写回本条记录的 `reportScenario`（覆盖设置里的默认值），已有总结会立刻按新场景重算一次规则版。设置里的「默认整理场景」只影响新建记录。
+
+不管哪个场景，抽取规则都共用同一套约束：
+
+- **建议不等于决策**：`建议 / 不如 / 可以考虑` 归到建议，`决定 / 定了 / 敲定 / 一致同意` 才算决策。
+- **讨论不等于承诺**：待办必须同时命中「行动线索词」和「具体动作动词」，条件句（如果…就…）与纯要求句一律排除。
+- **负责人可以是空的**：只有第一人称（我来 / 我负责 / 我下周）才敢署名，其余留空并标「待确认」。
+- **截止时间只取原文**：原文没写日期就不臆造。
+- **章节不切碎**：相邻句间隔 < 90 秒且单章 < 5 分钟、< 6 句，才留在同一章。
+
+### 2. 规则与大模型分开
+
+默认走本机规则（确定性、可审计、离线可用），界面标「本机规则抽取」。配置了大模型后可以点「用大模型重写」，但输出要过同一道校验：**每条结论必须带 `src` 行号**，解析不出处来源的条目直接丢弃，不降级成「看起来更像人写的段落」。模型失败或超时，回退规则结果并提示，不静默给半成品。
+
+按人员的分区（主要观点 / 提出的问题 / 建议 / 决策 / 承诺）在四个场景下都保留，和整场纪要分开存储。
+
+### 3. 翻译：只在点了才发
+
+- 入口在文稿页标签行右侧的「译」按钮，选语言（English / 简体中文 / 日本語 / 한국어）后才发请求；默认语言可在设置里指定，未指定时中文界面译英文。
+- 按 30 段一批发送，逐段对齐；模型多给、少给或行号越界的结果**直接丢弃**，不猜、不错位。
+- 译文写进独立的 `translations` 表（`transcriptId + lang` 唯一），原文一个字不动；全文下方以小字 + 左侧竖线显示，可一键关掉只看原文。
+- 中途失败保留已完成的段落，重试只补缺的行；「清除译文」只删译文，不动文稿。
+- 兼容 OpenAI 的 `/chat/completions`，请求由浏览器直连用户配置的地址，不经过任何中间服务器。
+
+**已知边界**：翻译与「大模型重写」都需要用户自备接口。没有配置时按钮会明确说「需要先配置大模型接口」，不会用假译文充数——这和说话人模块里的「模拟云端」不同，后者只在分离任务里标注「模拟」用于验证融合路径。
 
 ## 说话人识别与身份管理
 
@@ -202,7 +242,7 @@ speakerLocked            1 = 人工锁定，自动结果不得覆盖
 | `transcripts` | 转录段 | `recordingId, startMs, endMs, text, engine, status(interim/final/edited), speakerId, speakerConfidence, speakerSource, speakerEngine, speakerLocked, edited, rev, original, raw, corrections, corrected` |
 | `meta` | 设置 | `key='settings'` |
 
-说话人识别（库版本 2 起，当前 `DB_VERSION = 3`，旧库原地升级、不丢数据）：
+说话人识别与总结（库版本 2 起，当前 `DB_VERSION = 4`，旧库原地升级、不丢数据）：
 
 | store | 用途 | 关键字段 |
 | --- | --- | --- |
@@ -211,13 +251,14 @@ speakerLocked            1 = 人工锁定，自动结果不得覆盖
 | `speakerMerges` | 合并历史（支持撤销） | `recordingId, sourceId, sourceName, targetId, targetName, movedSegments, at, undone` |
 | `diarizationTasks` | 分离任务状态机 | `recordingId, engine(ondevice/cloud), mode, taskId, status(pending/queued/processing/completed/failed/retrying/cancelled), attempts, errorCode, startedAt, finishedAt` |
 | `diarizationResults` | 引擎原始结果（按引擎各存一份） | `recordingId, taskId, engine, engineVersion, resultJson, speakerCount, spanCount, at` |
-| `meetingSummaries` | 整场会议总结 | `recordingId, generator(rules/llm), dataVersion, payload{overview,discussionPoints,confirmedDecisions,unresolvedQuestions,participantOpinions,counts}` |
+| `meetingSummaries` | 整场纪要（按场景） | `recordingId, scenario(meeting/class/interview/memo), generator(rules/llm), dataVersion, payload{overview,topics,counts,…}`；会议含 `discussionPoints/confirmedDecisions/unresolvedQuestions/participantOpinions`，课堂含 `chapters/emphasis/reviewOutline`，访谈含 `qa/quotes/followUps`，备忘含 `keyPoints/reminders` |
 | `speakerSummaries` | 按人员总结 | `recordingId, speakerId, generator, dataVersion, payload{keyPoints,questions,suggestions,decisions,commitments}` |
 | `summarySources` | 总结条目 → 原句（强制溯源） | `recordingId, summaryId, kind(meeting/speaker), section, index, transcriptId, startMs` |
 | `actionItems` | 待办 | `recordingId, speakerId, text, ownerId, ownerName, ownerConfirmed, dueText, status(open/done), transcriptId, startMs` |
 | `asrJobs` | 补识别队列（v3 新增） | `recordingId, kind(gap/tail), startMs, endMs, status(pending/processing/completed/failed/skipped), attempts, reason, text, transcriptIds` |
+| `translations` | 译文（v4 新增，`transcriptId + lang` 唯一） | `recordingId, transcriptId, lang, text, generator, model, rev, createdAt, updatedAt` |
 
-删除单条录音时，上述 10 张表按 `recordingId` 级联清理，并把转录段的说话人字段复位；`speakers` 均带 `recordingId` 索引，`speakerAssignments` 另带 `transcriptId` 索引，`asrJobs` 另带 `status` 索引。
+删除单条录音时，上述 11 张表按 `recordingId` 级联清理，并把转录段的说话人字段复位；`speakers` 均带 `recordingId` 索引，`speakerAssignments` 与 `translations` 另带 `transcriptId` 索引，`asrJobs` 另带 `status` 索引。
 
 录音对象新增两个只读字段：`integrity`（分段数、是否校验通过、坏段数与时间断裂数）与 `pending`（待补识别的段数与总时长）。
 
@@ -230,13 +271,14 @@ index.html
 css/      tokens.css（设计令牌，深浅双主题）· app.css（基础组件）· views.css（各页面）
 js/
   main.js         路由、主题、全局播放器、启动流程
-  store.js        IndexedDB 封装与仓储方法（v3：录音 / 转录 / 说话人 / 总结 / 补识别 14 张表）
+  store.js        IndexedDB 封装与仓储方法（v4：录音 / 转录 / 说话人 / 总结 / 补识别 / 译文 15 张表）
   audio.js        Recorder（采集/分段/电平/逐帧回调）、Player、波形采样
   asr.js          浏览器实时识别封装 + 时间戳估算
   ai.js           本机规则：要点/待办/问题/关键词
   diarize.js      说话人分离引擎：重采样、基频、特征、聚类、双引擎、融合
   speakers.js     身份管理：跑分离、改名、合并/撤销、重指派、锁定、统计
-  summarize.js    会议与按人员总结：规则抽取、大模型调用、溯源校验
+  summarize.js    场景化纪要：会议/课堂/访谈/备忘四套结构、大模型调用、溯源校验
+  translate.js    译文：分批请求、逐段对齐、越界丢弃、只补缺行
   live-speaker.js 录音中的实时发言人跟踪（复用 diarize 的基频函数）
   i18n.js         双语词条与取词函数（切换语言不刷新页面）
   correct.js      纠错引擎：词库/上下文/拼音归一/大模型调用
@@ -255,7 +297,7 @@ assets/icon.svg  manifest.webmanifest  sw.js（离线外壳）
 | whisper.cpp 本地识别 | Web Speech API | 浏览器识别由系统/厂商服务提供，中文效果依赖环境；不支持时会明确降级为「仅录音」 |
 | 云端实时识别 API | 未接入 | 没有可用凭证，因此不伪造云端结果；`engineMode` 已预留三种模式与切换入口 |
 | SQLite | IndexedDB | 字段命名与文档 6.2 / 6.3 保持一致，迁移到 SQLite 时按同名字段建表即可 |
-| 翻译 / 说话人分离与会议纪要 | 说话人分离：本机声学引擎 + 云端接口（可选）已实现；翻译未实现 | 分离按技术规范实现了双引擎抽象、统一结果模型、融合与任务状态机；云端接口需自备地址与 Key，未配置时用明确标注的「模拟云端」跑通融合链路。翻译仍缺服务，界面不展示未经服务验证的内容 |
+| 翻译 / 说话人分离与会议纪要 | 三者均已实现：分离（本机声学 + 云端可选）、场景化纪要（规则 + 可选大模型）、翻译（可选大模型） | 分离按技术规范实现了双引擎抽象、统一结果模型、融合与任务状态机；纪要按会议/课堂/访谈/备忘四套结构输出；翻译逐段对齐、独立存储。后两者都需要用户自备 OpenAI 兼容接口，未配置时明确提示而不伪造结果 |
 | 大模型纠错 | 可选接入（OpenAI 兼容） | 默认关闭；用户填接口与 Key 后才可用，请求由浏览器直连，不经过中间服务 |
 | 多语言（i18n 框架） | 自建轻量双语层 | 只有中英两套词条，没有引入 i18next；Flutter 版可换成 `flutter_localizations` + ARB，key 命名可直接复用 |
 
@@ -266,7 +308,7 @@ assets/icon.svg  manifest.webmanifest  sw.js（离线外壳）
 1. **P1 基础框架**：用此原型的路由、数据模型、状态文案直接映射到 Flutter 工程（`features/home|record|doc|settings`）。
 2. **P2 录音系统**：Kotlin 前台服务 + Swift `AVAudioSession`，沿用「30 秒分段 + 心跳 + 恢复」策略。
 3. **P3/P4 双引擎**：`asr.js` 的接口（`start/pause/resume/stop` + `onFinal/onInterim/onStatus` + 基于音频区间的时间戳）可直接作为引擎抽象层，替换为 whisper.cpp 与云端流式 API。
-4. **P5**：真正的大模型纪要（当前默认本机规则，接口已通）、云端同步与账号；说话人识别可直接把 `diarize.js` 的两个引擎换成原生实现（`processSegment` 接口与统一结果模型不变），本机引擎可下沉到 Kaldi/ONNX 的声纹模型。
+4. **P5**：云端同步与账号；纪要已支持可选大模型重写，原生版可换成端侧小模型做离线摘要；说话人识别可直接把 `diarize.js` 的两个引擎换成原生实现（`processSegment` 接口与统一结果模型不变），本机引擎可下沉到 Kaldi/ONNX 的声纹模型。
 5. **纠错增强**：把内置词库换成领域词表 + 语言模型重打分（如中文 GPT-2/ngram），并支持“从这篇文稿一键抽取术语进词库”。
 6. **说话人增强**：把「每场会议独立编号」升级为**用户显式开启**的跨会议声纹（需单独授权与删除入口）；补上重叠语音（双人同说）与远场噪声场景的分离质量评估。
 

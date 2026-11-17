@@ -11,13 +11,21 @@ import { toast, openSheet, closeSheet } from '../ui.js';
 import {
   loadSpeakerView, speakerName, reassignSegments, createEmptySpeaker, runDiarization,
 } from '../speakers.js';
-import { buildSummaries, dataVersionOf } from '../summarize.js';
+import { buildSummaries, dataVersionOf, scenarioOf, SCENARIOS } from '../summarize.js';
 import {
   getMeetingSummary, listSpeakerSummaries, listActionItems, updateActionItem, listTranscripts,
+  getRecording, updateRecording,
 } from '../store.js';
 import { T } from '../i18n.js';
 
 const colorOf = (spk) => `c${((spk?.color ?? 0) % 6 + 6) % 6}`;
+
+const SCENARIO_LABEL = {
+  meeting: 'sum.scenarioMeeting',
+  class: 'sum.scenarioClass',
+  interview: 'sum.scenarioInterview',
+  memo: 'sum.scenarioMemo',
+};
 
 export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
   let state = {
@@ -33,6 +41,7 @@ export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
     actions: [],
     busy: '',
     kind: 'speakers',
+    scenario: 'meeting',
     expanded: new Set(),
     loaded: false,
   };
@@ -40,11 +49,12 @@ export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
   /* ── 数据 ── */
   async function load() {
     const view = await loadSpeakerView(recordingId);
-    const [meeting, persons, actions, trs] = await Promise.all([
+    const [meeting, persons, actions, trs, rec] = await Promise.all([
       getMeetingSummary(recordingId),
       listSpeakerSummaries(recordingId),
       listActionItems(recordingId),
       listTranscripts(recordingId),
+      getRecording(recordingId),
     ]);
     state = {
       ...state,
@@ -58,6 +68,7 @@ export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
       meeting,
       persons,
       actions,
+      scenario: scenarioOf(rec, ctx.settings),
       loaded: true,
     };
   }
@@ -161,36 +172,117 @@ export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
   }
 
   /* ── AI 纪要 ── */
-  function renderSummary() {
-    state.kind = 'summary';
-    const m = state.meeting?.payload;
-    if (!m) {
-      el.innerHTML = `
-        <div class="para-empty">${T('doc.summaryEmpty')}</div>
-        <p class="hint" style="padding:0 0 18px">${T('doc.summaryEmptyDesc')}</p>
-        <button class="ghost accent" data-tab-act="summarize">${icons.sparkle}${T('doc.summaryGenerate')}</button>
-        ${!state.speakers.length ? `<p class="hint" style="margin-top:14px">${T('doc.summaryNoSpeaker')}</p>` : ''}`;
-      return;
-    }
-    const personById = new Map(state.persons.map((p) => [p.speakerId, p]));
-    el.innerHTML = `
-      <div class="sum-toolbar">
-        <span class="tag ${state.meeting.generator === 'llm' ? 'accent' : ''}">
-          ${state.meeting.generator === 'llm' ? T('doc.summaryByLlm') : T('doc.summaryByRules')}
-        </span>
-        <div class="spacer"></div>
-        <button class="mini-btn" data-tab-act="summarize">${T('doc.summaryRegenerate')}</button>
-        <button class="mini-btn" data-tab-act="summarize-llm">${T('doc.summaryLlm')}</button>
-      </div>
-      ${stale() ? `<p class="hint sum-stale">${T('doc.summaryStale')}</p>` : ''}
-      <article class="sum-card">
-        <div class="sum-card-head">${T('doc.meetingSummary')}</div>
+  function scenarioBar() {
+    return `
+      <div class="scen-bar">
+        ${SCENARIOS.map((sc) => `
+          <button class="filter-chip ${state.scenario === sc ? 'active' : ''}" data-tab-act="scenario" data-sc="${sc}">
+            ${esc(T(SCENARIO_LABEL[sc]))}
+          </button>`).join('')}
+      </div>`;
+  }
+
+  /** 摘要块：一段话 + 主题词，四个场景共用 */
+  function abstractBlock(m) {
+    return `
+      <div class="sum-abs">
+        <div class="sum-abs-label">${T('sum.abstract')}</div>
         <p class="sum-overview">${esc(m.overview)}</p>
         ${m.topics?.length ? `<div class="tk-chips">${m.topics.map((t) => `<span class="tag">${esc(t.text)}</span>`).join('')}</div>` : ''}
+      </div>`;
+  }
+
+  const actionItemsOf = (m) => (m.actionItems || []).map((a) => ({
+    text: a.text,
+    src: a.src || (a.transcriptId ? [{ trId: a.transcriptId, startMs: a.startMs }] : []),
+  }));
+
+  /** 按场景渲染主体 */
+  function scenarioBlocks(m) {
+    const sc = m.scenario || 'meeting';
+
+    if (sc === 'class') {
+      return `
+        <article class="sum-card">
+          <div class="sum-card-head">${T('doc.classSummary')}</div>
+          ${abstractBlock(m)}
+          ${(m.chapters || []).map((c) => `
+            <div class="sum-sec">
+              <div class="sum-sec-head">
+                <span class="sum-chap-no">${c.index}</span>${esc(c.title)}
+                ${c.startMs ? `<span class="sum-src">${fmtClock(c.startMs, false)}</span>` : ''}
+              </div>
+              <ul class="sum-list">${(c.points || []).map(sumItem).join('')}</ul>
+            </div>`).join('')}
+          ${section(T('sum.emphasis'), m.emphasis)}
+          ${section(T('sum.actions'), actionItemsOf(m))}
+        </article>
+        ${m.reviewOutline?.length ? `
+          <article class="sum-card">
+            <div class="sum-card-head">${T('sum.reviewOutline')}</div>
+            ${m.reviewOutline.map((r) => `
+              <div class="sum-sec">
+                <div class="sum-sec-head">${esc(r.title)}</div>
+                <ul class="sum-list">${(r.items || []).map(sumItem).join('')}</ul>
+              </div>`).join('')}
+          </article>` : ''}`;
+    }
+
+    if (sc === 'interview') {
+      return `
+        <article class="sum-card">
+          <div class="sum-card-head">${T('doc.interviewSummary')}</div>
+          ${abstractBlock(m)}
+          ${(m.qa || []).map((q) => {
+            const src = q.question?.src?.[0];
+            return `
+              <div class="qa-pair">
+                <div class="qa-q" ${src ? `data-locate="${src.trId}" data-jump="${src.startMs}"` : ''}>
+                  <span class="qa-mark">Q</span><span>${esc(q.question?.text || '')}</span>
+                </div>
+                <div class="qa-a">
+                  <span class="qa-mark">A</span><span>${esc(q.answer?.text || '')}</span>
+                </div>
+              </div>`;
+          }).join('')}
+          ${!m.qa?.length ? `<p class="hint">${T('sum.noQa')}</p>` : ''}
+        </article>
+        ${m.quotes?.length ? `
+          <article class="sum-card">
+            <div class="sum-card-head">${T('sum.quotes')}</div>
+            <ul class="sum-list">${m.quotes.map(sumItem).join('')}</ul>
+          </article>` : ''}
+        ${m.followUps?.length ? `
+          <article class="sum-card">
+            <div class="sum-card-head">${T('sum.followUps')}</div>
+            <ul class="sum-list">${m.followUps.map(sumItem).join('')}</ul>
+          </article>` : ''}
+        ${m.actionItems?.length ? `
+          <article class="sum-card">
+            <div class="sum-card-head">${T('sum.actions')}</div>
+            <ul class="sum-list">${actionItemsOf(m).map(sumItem).join('')}</ul>
+          </article>` : ''}`;
+    }
+
+    if (sc === 'memo') {
+      return `
+        <article class="sum-card">
+          <div class="sum-card-head">${T('doc.memoSummary')}</div>
+          ${abstractBlock(m)}
+          ${section(T('sum.keyPoints'), m.keyPoints)}
+          ${section(T('sum.reminders'), m.reminders)}
+          ${section(T('sum.actions'), actionItemsOf(m))}
+        </article>`;
+    }
+
+    return `
+      <article class="sum-card">
+        <div class="sum-card-head">${T('doc.meetingSummary')}</div>
+        ${abstractBlock(m)}
         ${section(T('sum.discussion'), m.discussionPoints)}
         ${section(T('sum.decisions'), m.confirmedDecisions)}
         ${section(T('sum.open'), m.unresolvedQuestions)}
-        ${section(T('sum.actions'), (m.actionItems || []).map((a) => ({ text: a.text, src: a.src || (a.transcriptId ? [{ trId: a.transcriptId, startMs: a.startMs }] : []) })))}
+        ${section(T('sum.actions'), actionItemsOf(m))}
       </article>
       ${m.participantOpinions?.length ? `
         <article class="sum-card">
@@ -200,7 +292,36 @@ export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
               <div class="sum-opinion-name">${esc(o.name || T('spk.unknown'))}</div>
               <ul class="sum-list">${sumItem({ text: o.text, src: o.src })}</ul>
             </div>`).join('')}
-        </article>` : ''}
+        </article>` : ''}`;
+  }
+
+  function renderSummary() {
+    state.kind = 'summary';
+    const m = state.meeting?.payload;
+    if (!m) {
+      el.innerHTML = `
+        ${scenarioBar()}
+        <div class="para-empty">${T('doc.summaryEmpty')}</div>
+        <p class="hint" style="padding:0 0 18px">${T('doc.summaryEmptyDesc')}</p>
+        <button class="ghost accent" data-tab-act="summarize">${icons.sparkle}${T('doc.summaryGenerate')}</button>
+        ${!state.speakers.length ? `<p class="hint" style="margin-top:14px">${T('doc.summaryNoSpeaker')}</p>` : ''}`;
+      return;
+    }
+    const personById = new Map(state.persons.map((p) => [p.speakerId, p]));
+    const mismatch = (m.scenario || 'meeting') !== state.scenario;
+    el.innerHTML = `
+      ${scenarioBar()}
+      <div class="sum-toolbar">
+        <span class="tag ${state.meeting.generator === 'llm' ? 'accent' : ''}">
+          ${state.meeting.generator === 'llm' ? T('doc.summaryByLlm') : T('doc.summaryByRules')}
+        </span>
+        <div class="spacer"></div>
+        <button class="mini-btn" data-tab-act="summarize">${T('doc.summaryRegenerate')}</button>
+        <button class="mini-btn" data-tab-act="summarize-llm">${T('doc.summaryLlm')}</button>
+      </div>
+      ${mismatch ? `<p class="hint sum-stale">${T('doc.scenarioMismatch')}</p>` : ''}
+      ${stale() ? `<p class="hint sum-stale">${T('doc.summaryStale')}</p>` : ''}
+      ${scenarioBlocks(m)}
       ${state.speakers.map((spk) => {
         const row = personById.get(spk.id);
         if (!row) return '';
@@ -265,7 +386,9 @@ export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
     const old = btn?.textContent;
     if (btn) { btn.textContent = T('doc.summaryGenerating'); btn.disabled = true; }
     try {
-      const res = await buildSummaries(recordingId, { settings: ctx.settings, allowLLM });
+      const res = await buildSummaries(recordingId, {
+        settings: ctx.settings, allowLLM, scenario: state.scenario,
+      });
       if (!res.ok) {
         toast(res.code === 'no-transcript' ? T('diar.noTranscript') : T('doc.summaryEmpty'));
         return;
@@ -279,6 +402,23 @@ export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
       state.busy = '';
       if (btn) { btn.textContent = old || T('doc.summaryRegenerate'); btn.disabled = false; }
     }
+  }
+
+  /** 切换场景：写入本条记录，已有总结则按新场景重算规则版（不自动调用大模型） */
+  async function switchScenario(sc) {
+    if (state.scenario === sc || state.busy) return;
+    state.scenario = sc;
+    await updateRecording(recordingId, { reportScenario: sc });
+    if (state.meeting) {
+      state.busy = 'scenario';
+      try {
+        await buildSummaries(recordingId, { settings: ctx.settings, scenario: sc });
+        await load();
+      } finally {
+        state.busy = '';
+      }
+    }
+    renderSummary();
   }
 
   async function identify() {
@@ -392,6 +532,7 @@ export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
     if (act === 'identify') { await identify(); return; }
     if (act === 'summarize') { await doSummarize(false); return; }
     if (act === 'summarize-llm') { await doSummarize(true); return; }
+    if (act === 'scenario') { await switchScenario(actEl.dataset.sc); return; }
     if (act === 'toggle-todo') {
       const id = actEl.dataset.id;
       const cur = state.actions.find((a) => a.id === id);

@@ -7,6 +7,7 @@ import { toast, openSheet, confirmDialog, renderWave, closeSheet } from '../ui.j
 import {
   getRecording, updateRecording, listTranscripts, updateTranscript,
   addTranscript, deleteTranscript, softDeleteRecording, purgeRecording, setSettings,
+  getTranslationMap, translationLangs, clearTranslations,
 } from '../store.js';
 import { analyze } from '../ai.js';
 import { statusOf, engineLabel, folderLabel } from '../model.js';
@@ -19,6 +20,9 @@ import {
   loadSpeakerView, speakerName, runDiarization, reassignSegments, createEmptySpeaker,
 } from '../speakers.js';
 import { pendingSummary, runRepair, canRepair, repairReasonText } from '../repair.js';
+import {
+  translateRecording, TARGET_LANGS, langLabel, defaultTargetLang,
+} from '../translate.js';
 import { createSpeakerTabs } from './doc-speaker-tabs.js';
 
 export function mountDoc(root, ctx, id) {
@@ -47,6 +51,7 @@ export function mountDoc(root, ctx, id) {
           <button class="doc-tab" data-tab="summary">${T('doc.tabSummary')}</button>
           <button class="doc-tab" data-tab="todos">${T('doc.tabTodos')}</button>
           <div class="doc-tabs-end">
+            <button class="icon-btn tr-btn" data-act="translate" aria-label="${T('doc.translate')}" title="${T('doc.translate')}">${icons.translate}</button>
             <button class="fix-btn" id="fixBtn" data-act="fix" aria-label="${T('doc.fixEntry')}">${icons.sparkle}<span id="fixCount">0</span></button>
             <button class="icon-btn" data-act="expand" aria-label="${T('common.expand')}">${icons.expand}</button>
           </div>
@@ -54,6 +59,7 @@ export function mountDoc(root, ctx, id) {
 
         <div class="doc-toolbar" id="toolbar"></div>
         <div class="doc-toolbar spk-filter-bar" id="spkFilterBar" hidden></div>
+        <div class="doc-toolbar tr-bar" id="trBar" hidden></div>
         <div id="searchWrap"></div>
         <div class="paras" id="paras"></div>
       </div>
@@ -86,6 +92,7 @@ export function mountDoc(root, ctx, id) {
   const editBar = $('#editBar', root);
   const bannerEl = $('#spkBanner', root);
   const repairBar = $('#repairBar', root);
+  const trBar = $('#trBar', root);
 
   let rec = null;
   let trs = [];
@@ -103,6 +110,12 @@ export function mountDoc(root, ctx, id) {
   let backfilled = false;
   let learned = [];
   let llmHints = [];
+  /* 译文：trLang 为空表示不显示；trMap 为 transcriptId → 译文行 */
+  let trLang = '';
+  let trMap = new Map();
+  let trLangs = [];
+  let trBusy = false;
+  let trShow = true;
   let llmBusy = false;
   let spk = { speakers: [], byId: new Map(), groups: new Map(), tasks: [], unknownCount: 0, unconfirmed: 0 };
   let tabsApi = null;
@@ -122,6 +135,16 @@ export function mountDoc(root, ctx, id) {
     }
     analysis = analyze(trs);
     spk = await loadSpeakerView(id);
+    trLangs = await translationLangs(id);
+    if (trLangs.length) {
+      if (!trLang || !trLangs.some((l) => l.lang === trLang)) {
+        trLang = trLangs.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0].lang;
+      }
+      trMap = await getTranslationMap(id, trLang);
+    } else {
+      trLang = '';
+      trMap = new Map();
+    }
     const sum = await pendingSummary(id).catch(() => null);
     repair = {
       count: sum?.count || 0,
@@ -297,6 +320,113 @@ export function mountDoc(root, ctx, id) {
     if (spkFilter !== 'all' && spkFilter !== 'unknown' && !spk.byId.has(spkFilter)) spkFilter = 'all';
   }
 
+  /* ── 译文条（有译文才出现，可关掉只看原文） ── */
+  function renderTrBar() {
+    $('[data-act="translate"]', root)?.classList.toggle('is-on', trLangs.length > 0);
+    if (!trLangs.length) {
+      trBar.hidden = true;
+      trBar.innerHTML = '';
+      return;
+    }
+    const cur = trLangs.find((l) => l.lang === trLang);
+    trBar.hidden = false;
+    trBar.innerHTML = `
+      <button class="filter-chip ${trShow ? 'active' : ''}" data-act="tr-toggle">
+        ${icons.translate}${esc(langLabel(trLang))}
+      </button>
+      ${trLangs.filter((l) => l.lang !== trLang).map((l) => `
+        <button class="filter-chip" data-act="tr-lang" data-lang="${esc(l.lang)}">${esc(langLabel(l.lang))}</button>`).join('')}
+      <span class="tr-hint">${esc(T('doc.trCount', { n: cur?.count || 0, total: trs.length }))}</span>
+      <div class="spacer"></div>
+      <button class="mini-btn" data-act="tr-retranslate" ${trBusy ? 'disabled' : ''}>${trBusy ? T('doc.trRunning') : T('doc.trRetranslate')}</button>
+      <button class="mini-btn" data-act="tr-clear" ${trBusy ? 'disabled' : ''}>${T('doc.trClear')}</button>`;
+  }
+
+  function openTranslate() {
+    const def = ctx.settings.translateLang || defaultTargetLang(ctx.settings.uiLang || 'zh');
+    const langs = TARGET_LANGS.slice().sort((a, b) => (a.code === def ? -1 : b.code === def ? 1 : 0));
+    const box = document.createElement('div');
+    box.innerHTML = `
+      <p class="sheet-desc">${T('doc.trDesc')}</p>
+      <div class="sheet-actions">
+        ${langs.map((l) => `
+          <button class="sheet-action" data-lang="${esc(l.code)}">
+            <span>${esc(l.label)}</span>
+            ${trLangs.some((x) => x.lang === l.code) ? `<span class="sheet-check">${icons.check}</span>` : ''}
+          </button>`).join('')}
+      </div>
+      ${llmReady(ctx.settings) ? '' : `<p class="hint">${T('doc.trNeedLlm')}</p>`}`;
+    const close = openSheet({ title: T('doc.translate'), content: box });
+    box.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-lang]');
+      if (!btn) return;
+      const lang = btn.dataset.lang;
+      close();
+      await runTranslate(lang);
+    });
+  }
+
+  async function runTranslate(lang) {
+    if (trBusy) return;
+    if (!llmReady(ctx.settings)) {
+      const go = await confirmDialog({
+        title: T('doc.translate'),
+        message: T('doc.trNeedLlm'),
+        confirmText: T('doc.trGoSettings'),
+      });
+      if (go) ctx.navigate('#/settings');
+      return;
+    }
+    trBusy = true;
+    const box = document.createElement('div');
+    box.innerHTML = `
+      <p class="sheet-desc">${esc(T('doc.trRunningLang', { lang: langLabel(lang) }))}</p>
+      <div class="tr-progress"><span style="width:0%"></span></div>
+      <p class="hint">${esc(T('doc.trRunningHint'))}</p>`;
+    const close = openSheet({ title: T('doc.translate'), content: box });
+    const fill = box.querySelector('.tr-progress span');
+    try {
+      const res = await translateRecording(id, {
+        settings: ctx.settings,
+        lang,
+        onProgress: (p) => { if (fill) fill.style.width = `${Math.round(p * 100)}%`; },
+      });
+      close();
+      if (!res.ok) {
+        toast(T('doc.trNoText'));
+        return;
+      }
+      trLang = lang;
+      trShow = true;
+      await load();
+      renderTrBar();
+      renderParas();
+      toast(res.same ? T('doc.trAlready') : T('doc.trDone', { n: res.count }));
+    } catch (err) {
+      close();
+      toast(err?.message || T('doc.trFailed'));
+    } finally {
+      trBusy = false;
+      renderTrBar();
+    }
+  }
+
+  async function clearTrans(lang) {
+    const ok = await confirmDialog({
+      title: T('doc.trClear'),
+      message: T('doc.trClearConfirm', { lang: langLabel(lang) }),
+      confirmText: T('common.delete'),
+      danger: true,
+    });
+    if (!ok) return;
+    await clearTranslations(id, lang);
+    if (trLang === lang) { trLang = ''; trMap = new Map(); trShow = true; }
+    await load();
+    renderTrBar();
+    renderParas();
+    toast(T('doc.trCleared'));
+  }
+
   function highlight(text) {
     let out = esc(text);
     const marks = analysis.takeaways.slice(0, 2)
@@ -355,6 +485,7 @@ export function mountDoc(root, ctx, id) {
       const fixes = t.corrections || [];
       const owner = t.speakerId ? spk.byId.get(t.speakerId) : null;
       const lowConf = t.speakerId && (t.speakerConfidence ?? 1) < 0.45;
+      const tr = trShow && trLang ? trMap.get(t.id) : null;
       return `
         <div class="para" data-id="${t.id}" data-start="${t.startMs}">
           <div class="para-meta">
@@ -367,6 +498,7 @@ export function mountDoc(root, ctx, id) {
             ${fixes.length ? `<button class="para-flag fix-flag" data-act="fix">${icons.sparkle}${T('doc.fixed', { n: fixes.length })}</button>` : ''}
           </div>
           <div class="para-text">${paraHtml(t)}</div>
+          ${tr ? `<div class="para-tr" lang="${esc(trLang)}"><span class="para-tr-tag">${esc(langLabel(trLang))}</span><span>${esc(tr.text)}</span></div>` : ''}
         </div>`;
     }).join('');
     syncFixBadge();
@@ -922,6 +1054,8 @@ export function mountDoc(root, ctx, id) {
     toolbar.style.display = isTranscript ? '' : 'none';
     if (!isTranscript) spkFilterBar.style.display = 'none';
     else spkFilterBar.style.display = '';
+    if (!isTranscript) trBar.style.display = 'none';
+    else { trBar.style.display = ''; renderTrBar(); }
     $('[data-act="expand"]', root)?.style.setProperty('display', isTranscript ? '' : 'none');
     if (!isTranscript) searchWrap.innerHTML = '';
     if (isTranscript) { renderParas(); return; }
@@ -1099,6 +1233,18 @@ export function mountDoc(root, ctx, id) {
 
     if (act === 'back') { ctx.player.pause(); ctx.navigate('#/'); return; }
     if (act === 'identify') { await identify(); return; }
+    if (act === 'translate') { openTranslate(); return; }
+    if (act === 'tr-toggle') { trShow = !trShow; renderTrBar(); renderParas(); return; }
+    if (act === 'tr-lang') {
+      trLang = actEl.dataset.lang;
+      trMap = await getTranslationMap(id, trLang);
+      trShow = true;
+      renderTrBar();
+      renderParas();
+      return;
+    }
+    if (act === 'tr-retranslate') { await runTranslate(trLang); return; }
+    if (act === 'tr-clear') { await clearTrans(trLang); return; }
     if (act === 'repair') { await doRepair(); return; }
     if (act === 'speakers') { ctx.player.pause(); ctx.navigate(`#/speakers/${id}`); return; }
     if (act === 'fav') {

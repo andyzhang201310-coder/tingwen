@@ -36,6 +36,20 @@ const DIAR_ENGINES = () => [
   { label: T('set.diarLocal'), value: 'local' },
   { label: T('set.diarCloud'), value: 'cloud' },
 ];
+const SCENARIO_OPTS = () => [
+  { label: T('set.scenAuto'), value: 'auto' },
+  { label: T('sum.scenarioMeeting'), value: 'meeting' },
+  { label: T('sum.scenarioClass'), value: 'class' },
+  { label: T('sum.scenarioInterview'), value: 'interview' },
+  { label: T('sum.scenarioMemo'), value: 'memo' },
+];
+const TRANSLATE_OPTS = () => [
+  { label: T('set.translateAuto'), value: 'auto' },
+  { label: 'English', value: 'en' },
+  { label: '简体中文', value: 'zh-CN' },
+  { label: '日本語', value: 'ja' },
+  { label: '한국어', value: 'ko' },
+];
 const ENGINES = () => [
   { label: T('set.engineAuto'), value: 'auto' },
   { label: T('set.engineLocal'), value: 'local' },
@@ -123,6 +137,8 @@ export function mountSettings(root, ctx) {
         ${row({ icon: 'bolt', label: T('set.fixLevel'), value: current(LEVELS(), s.correctLevel), act: 'correct-level' })}
         ${row({ icon: 'list', label: T('set.fixDict'), value: T('set.fixDictValue', { n: dictCount }), act: 'dict' })}
         ${row({ icon: 'cloud', label: T('set.llm'), value: llmReady(s) ? T('set.configured') : T('set.notConfigured'), act: 'llm' })}
+        ${row({ icon: 'doc', label: T('set.summaryScenario'), value: current(SCENARIO_OPTS(), s.summaryScenario), act: 'summary-scenario' })}
+        ${row({ icon: 'translate', label: T('set.translateLang'), value: TRANSLATE_OPTS().find((x) => x.value === (s.translateLang || 'auto'))?.label || T('set.translateAuto'), act: 'translate-lang' })}
         ${toggle({ icon: 'copy', label: T('set.autoCopy'), key: 'autoCopy', sub: s.autoCopy ? T('set.autoCopySub') : '' })}
         ${toggle({ icon: 'mic', label: T('set.instant'), key: 'instantRecord', sub: T('set.instantSub') })}
       </div>
@@ -240,6 +256,29 @@ export function mountSettings(root, ctx) {
     if (act === 'asr-cloud') { openAsrCloud(); return; }
     if (act === 'spk-data') { openSpeakerData(); return; }
     if (act === 'llm') { openLLM(); return; }
+    if (act === 'summary-scenario') {
+      const v = await choiceSheet({
+        title: T('set.summaryScenario'),
+        desc: T('set.summaryScenarioDesc'),
+        options: SCENARIO_OPTS(),
+        value: s.summaryScenario || 'auto',
+      });
+      if (v) { ctx.settings = await setSettings({ summaryScenario: v }); await render(); }
+      return;
+    }
+    if (act === 'translate-lang') {
+      const v = await choiceSheet({
+        title: T('set.translateLang'),
+        desc: T('set.translateLangDesc'),
+        options: TRANSLATE_OPTS(),
+        value: s.translateLang || 'auto',
+      });
+      if (v) {
+        ctx.settings = await setSettings({ translateLang: v === 'auto' ? '' : v });
+        await render();
+      }
+      return;
+    }
     if (act === 'correct-level') {
       const v = await choiceSheet({
         title: T('set.fixLevel'),

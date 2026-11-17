@@ -5,14 +5,15 @@ import { uid, sha256Short } from './util.js';
 const DB_NAME = 'tingwen_db';
 const LEGACY_DB_NAME = 'yuji_db';
 /* v2：新增说话人识别与身份管理相关表（对应技术规范第 8 章）
-   v3：新增 asrJobs（未识别区间的补处理队列，对应产品文档 8.2「断网恢复」） */
-const DB_VERSION = 3;
+   v3：新增 asrJobs（未识别区间的补处理队列，对应产品文档 8.2「断网恢复」）
+   v4：新增 translations（译文，对应产品文档 2.3「摘要与翻译」） */
+const DB_VERSION = 4;
 const STORES = [
   'recordings', 'segments', 'transcripts', 'meta',
   'speakers', 'speakerAssignments', 'speakerMerges',
   'diarizationTasks', 'diarizationResults',
   'meetingSummaries', 'speakerSummaries', 'summarySources', 'actionItems',
-  'asrJobs',
+  'asrJobs', 'translations',
 ];
 
 /** 设置默认值（对应文档 2.x / 7.x 与 界面参考3） */
@@ -49,6 +50,9 @@ export const DEFAULT_SETTINGS = {
   asrCloudKey: '',
   asrCloudModel: 'whisper-1',
   repairAuto: true,           // 网络恢复后自动补识别（需已配置云端识别接口）
+  /* 智能整理与翻译（产品文档 2.3） */
+  summaryScenario: 'auto',    // auto（按文件夹推断）| meeting | class | interview | memo
+  translateLang: '',          // 目标语言；空 = 按界面语言取（中文界面译英文）
 };
 
 let dbPromise = null;
@@ -113,6 +117,12 @@ function createStores(db) {
     const s = db.createObjectStore('asrJobs', { keyPath: 'id' });
     s.createIndex('recordingId', 'recordingId');
     s.createIndex('status', 'status');
+  }
+  /* ── 译文（v4） ── */
+  if (!db.objectStoreNames.contains('translations')) {
+    const s = db.createObjectStore('translations', { keyPath: 'id' });
+    s.createIndex('recordingId', 'recordingId');
+    s.createIndex('transcriptId', 'transcriptId');
   }
 }
 
@@ -282,6 +292,8 @@ export async function purgeRecording(id) {
   await Promise.all(jobs.map((j) => db.del('asrJobs', j.id)));
   const trs = await db.byIndex('transcripts', 'recordingId', id);
   await Promise.all(trs.map((t) => db.del('transcripts', t.id)));
+  const trans = await db.byIndex('translations', 'recordingId', id);
+  await Promise.all(trans.map((t) => db.del('translations', t.id)));
   await purgeSpeakerData(id);
   await db.del('recordings', id);
 }
@@ -570,6 +582,7 @@ export async function putMeetingSummary(data) {
   const row = {
     id: data.id || uid('ms'),
     recordingId: data.recordingId,
+    scenario: data.scenario || 'meeting',   // meeting | class | interview | memo
     generator: data.generator || 'rules',
     dataVersion: data.dataVersion || '',
     payload: data.payload,
@@ -624,6 +637,61 @@ export async function clearSummaries(recordingId) {
     const rows = await db.byIndex(name, 'recordingId', recordingId);
     await Promise.all(rows.map((r) => db.del(name, r.id)));
   }
+}
+
+/* ───────── 译文（产品文档 2.3：摘要与翻译） ───────── */
+
+export async function listTranslations(recordingId, lang) {
+  const rows = await db.byIndex('translations', 'recordingId', recordingId);
+  const list = lang ? rows.filter((r) => r.lang === lang) : rows;
+  return list.sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+}
+
+/** 渲染用：transcriptId → 译文行 */
+export async function getTranslationMap(recordingId, lang) {
+  const rows = await listTranslations(recordingId, lang);
+  const map = new Map();
+  rows.forEach((r) => map.set(r.transcriptId, r));
+  return map;
+}
+
+/** 同一段同一语言只保留一条，重译时 rev 递增（不覆盖原文，也不留重复行） */
+export async function putTranslation(data) {
+  const rows = await db.byIndex('translations', 'transcriptId', data.transcriptId);
+  const cur = rows.find((r) => r.lang === data.lang);
+  const row = {
+    id: cur?.id || uid('tl'),
+    recordingId: data.recordingId,
+    transcriptId: data.transcriptId,
+    lang: data.lang,
+    text: data.text,
+    generator: data.generator || 'llm',
+    model: data.model || '',
+    rev: (cur?.rev || 0) + 1,
+    createdAt: cur?.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  };
+  await db.put('translations', row);
+  return row;
+}
+
+export async function clearTranslations(recordingId, lang) {
+  const rows = await listTranslations(recordingId, lang);
+  await Promise.all(rows.map((r) => db.del('translations', r.id)));
+  return rows.length;
+}
+
+/** 已翻译语言汇总：{lang, count, updatedAt}[] */
+export async function translationLangs(recordingId) {
+  const rows = await listTranslations(recordingId);
+  const map = new Map();
+  rows.forEach((r) => {
+    const cur = map.get(r.lang) || { lang: r.lang, count: 0, updatedAt: 0 };
+    cur.count += 1;
+    cur.updatedAt = Math.max(cur.updatedAt, r.updatedAt || 0);
+    map.set(r.lang, cur);
+  });
+  return [...map.values()];
 }
 
 /* ───────── 待办（6.4） ───────── */
