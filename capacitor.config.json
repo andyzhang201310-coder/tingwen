@@ -1,0 +1,16 @@
+{
+  "appId": "com.tingwen.app",
+  "appName": "听文",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "useLegacyBridge": false
+  },
+  "server": {
+    "androidScheme": "http"
+  },
+  "plugins": {
+    "LocalNotifications": {}
+  }
+}

@@ -23,3 +23,11 @@ __pycache__/
 # 用户录音数据（如有导出）
 *.webm
 *.m4a
+
+# 安卓打包：本机路径与可重建的生成物
+android/local.properties
+www/
+android/.gradle/
+android/build/
+android/app/build/
+dist/*.apk          # 构建产物，4MB+ 不适合进 git；用 npm run android:build 重建
