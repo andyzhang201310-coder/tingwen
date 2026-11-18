@@ -34,8 +34,8 @@ export const DEFAULT_SETTINGS = {
   correctLevel: 'standard',   // conservative | standard | aggressive
   cleanFiller: false,         // 清理口头语（嗯/啊/重复词）
   customDict: '',             // 自定义纠错词库，每行 “错词=对词”
-  llmBase: '',                // 可选：OpenAI 兼容接口地址
-  llmModel: 'gpt-4o-mini',
+  llmBase: 'https://api.deepseek.com/v1',  // OpenAI 兼容接口地址（默认 DeepSeek）
+  llmModel: 'deepseek-chat',
   llmKey: '',
   instantRecord: false,
   autoDeleteOld: false,
@@ -803,9 +803,38 @@ export async function clearAsrJobs(recordingId, { keepOpen = true } = {}) {
 
 /* ───────── 设置 ───────── */
 
+/* 本机密钥兜底：js/llm-defaults.local.js 不进仓库（见 .gitignore），
+   打包和本机预览时存在，别的机器上没有就静默跳过。
+   用户在「设置 → 大模型」里填过的值优先，这里只填空缺。 */
+let localLlmPromise = null;
+function localLlmDefaults() {
+  if (!localLlmPromise) {
+    localLlmPromise = import('./llm-defaults.local.js')
+      .then((mod) => {
+        const d = mod.default || mod.LOCAL_LLM || {};
+        return { base: String(d.base || ''), model: String(d.model || ''), key: String(d.key || '') };
+      })
+      .catch(() => ({ base: '', model: '', key: '' }));
+  }
+  return localLlmPromise;
+}
+
 export async function getSettings() {
   const row = await db.get('meta', 'settings');
-  return normalizeAsrSettings({ ...DEFAULT_SETTINGS, ...(row?.value || {}) });
+  const merged = { ...DEFAULT_SETTINGS, ...(row?.value || {}) };
+  if (!merged.llmBase || !merged.llmKey) {
+    const local = await localLlmDefaults();
+    if (!merged.llmBase) {
+      merged.llmBase = local.base || DEFAULT_SETTINGS.llmBase;
+      /* 老版本默认模型是 gpt-4o-mini，直接配着新的默认地址会被服务端拒掉，跟着换掉 */
+      if (!merged.llmModel || merged.llmModel === 'gpt-4o-mini') {
+        merged.llmModel = local.model || DEFAULT_SETTINGS.llmModel;
+      }
+    }
+    if (!merged.llmModel) merged.llmModel = local.model || DEFAULT_SETTINGS.llmModel;
+    if (!merged.llmKey) merged.llmKey = local.key;
+  }
+  return normalizeAsrSettings(merged);
 }
 
 export async function setSettings(patch) {

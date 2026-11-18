@@ -75,6 +75,7 @@ ${batch.map((t, i) => `${i}. ${t.text}`).join('\n')}
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 60000);
+  const jsonStrict = /deepseek/i.test(String(settings.llmBase || '')) || /deepseek/i.test(String(settings.llmModel || ''));
   let res;
   try {
     res = await fetch(`${base}/chat/completions`, {
@@ -84,6 +85,7 @@ ${batch.map((t, i) => `${i}. ${t.text}`).join('\n')}
       body: JSON.stringify({
         model: settings.llmModel || 'gpt-4o-mini',
         temperature: 0.2,
+        ...(jsonStrict ? { response_format: { type: 'json_object' } } : {}),
         messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: user }],
       }),
     });
@@ -92,7 +94,10 @@ ${batch.map((t, i) => `${i}. ${t.text}`).join('\n')}
   } finally {
     clearTimeout(timer);
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}${detail ? ` · ${detail.slice(0, 140)}` : ''}`);
+  }
 
   const data = await res.json().catch(() => null);
   const content = data?.choices?.[0]?.message?.content || '';

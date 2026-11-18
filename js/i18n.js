@@ -656,6 +656,11 @@ const ZH = {
   'sum.llmConn': '无法连接大模型接口，已回退本机规则',
   'sum.llmParse': '大模型返回内容无法解析，已回退本机规则',
   'sum.llmFallback': '大模型总结不可用，本次使用本机规则抽取',
+  'sum.llmFail': '大模型调用失败',
+  'sum.llmEmpty': '大模型没有返回可用内容，已回退本机规则',
+  'sum.llmNeedConfig': '还没配置大模型。到「设置 → 大模型」填接口地址、模型和 API Key 即可。',
+  'sum.llmGoSettings': '去设置',
+  'doc.todoRegenerate': '重新生成待办',
   'sum.sourceCount': '{n} 处原文',
 
   /* 场景化整理与翻译（产品文档 2.3） */
@@ -1422,6 +1427,11 @@ const EN = {
   'sum.llmConn': 'Cannot reach the model endpoint — fell back to on-device rules',
   'sum.llmParse': 'Model output could not be parsed — fell back to on-device rules',
   'sum.llmFallback': 'Model summary unavailable; on-device rules were used',
+  'sum.llmFail': 'Model call failed',
+  'sum.llmEmpty': 'Model returned nothing usable — fell back to on-device rules',
+  'sum.llmNeedConfig': 'No model configured yet. Fill endpoint, model and API key in Settings → Model.',
+  'sum.llmGoSettings': 'Open settings',
+  'doc.todoRegenerate': 'Regenerate todos',
   'sum.sourceCount': '{n} source(s)',
 
   /* scenario reports & translation */

@@ -7,11 +7,12 @@
 
 import { esc, fmtClock, fmtDur } from '../util.js';
 import { icons } from '../icons.js';
-import { toast, openSheet, closeSheet } from '../ui.js';
+import { toast, openSheet, closeSheet, confirmDialog } from '../ui.js';
 import {
   loadSpeakerView, speakerName, reassignSegments, createEmptySpeaker, runDiarization,
 } from '../speakers.js';
 import { buildSummaries, dataVersionOf, scenarioOf, SCENARIOS } from '../summarize.js';
+import { llmReady } from '../correct.js';
 import {
   getMeetingSummary, listSpeakerSummaries, listActionItems, updateActionItem, listTranscripts,
   getRecording, updateRecording,
@@ -346,13 +347,22 @@ export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
   /* ── 待办 ── */
   function renderTodos() {
     state.kind = 'todos';
+    /* 配了大模型就直接走大模型：待办靠规则只能抓到第一人称承诺，容易一条都出不来 */
+    const genAct = llmReady(ctx.settings) ? 'summarize-llm' : 'summarize';
     if (!state.actions.length) {
       el.innerHTML = `
         <div class="para-empty">${T('doc.todoEmpty')}</div>
-        <button class="ghost accent" data-tab-act="summarize">${icons.sparkle}${T('doc.summaryGenerate')}</button>`;
+        <button class="ghost accent" data-tab-act="${genAct}">${icons.sparkle}${T('doc.summaryGenerate')}</button>`;
       return;
     }
     el.innerHTML = `
+      <div class="sum-toolbar">
+        <span class="tag ${state.meeting?.generator === 'llm' ? 'accent' : ''}">
+          ${state.meeting?.generator === 'llm' ? T('doc.summaryByLlm') : T('doc.summaryByRules')}
+        </span>
+        <div class="spacer"></div>
+        <button class="mini-btn" data-tab-act="${genAct}">${T('doc.todoRegenerate')}</button>
+      </div>
       <div class="todo-list">
         ${state.actions.map((a) => {
           const owner = a.ownerId ? state.byId.get(a.ownerId) : null;
@@ -381,8 +391,19 @@ export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
   /* ── 交互 ── */
   async function doSummarize(allowLLM) {
     if (state.busy) return;
+    if (allowLLM && !llmReady(ctx.settings)) {
+      const go = await confirmDialog({
+        title: T('doc.summaryLlm'),
+        message: T('sum.llmNeedConfig'),
+        confirmText: T('sum.llmGoSettings'),
+      });
+      if (go) ctx.navigate('#/settings');
+      return;
+    }
     state.busy = 'summarize';
-    const btn = el.querySelector('[data-tab-act="summarize"]');
+    /* 两个按钮都在工具栏里（重新生成 / 用大模型重写），必须按点了哪一个取，
+       否则「生成中…」会写到另一个按钮上 */
+    const btn = el.querySelector(`[data-tab-act="${allowLLM ? 'summarize-llm' : 'summarize'}"]`);
     const old = btn?.textContent;
     if (btn) { btn.textContent = T('doc.summaryGenerating'); btn.disabled = true; }
     try {
@@ -393,7 +414,14 @@ export function createSpeakerTabs({ el, ctx, recordingId, onLocate }) {
         toast(res.code === 'no-transcript' ? T('diar.noTranscript') : T('doc.summaryEmpty'));
         return;
       }
-      toast(allowLLM && res.generator === 'rules' ? T('sum.llmFallback') : T('doc.summaryGenerated'));
+      if (!allowLLM) {
+        toast(T('doc.summaryGenerated'));
+      } else if (res.generator === 'llm') {
+        toast(T('doc.summaryGenerated'));
+      } else {
+        /* 回退时把真实原因说出来（401、余额不足、超时都在这里），否则只看到一句“不可用”没法排查 */
+        toast(res.llmError ? `${T('sum.llmFallback')} · ${res.llmError}` : T('sum.llmFallback'));
+      }
       await load();
       renderByKind();
     } catch (err) {

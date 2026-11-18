@@ -35,3 +35,6 @@ dist/*.apk
 
 # 弃用的官方 SDK 包（7MB，会导致 SIGSEGV），不再参与构建
 android/app/libs/*.aar
+
+# 本地大模型密钥（不入库，仅本机/APK 内置：js/llm-defaults.local.js）
+js/llm-defaults.local.js

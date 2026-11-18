@@ -570,10 +570,14 @@ export function mountSettings(root, ctx) {
     const box = document.createElement('div');
     box.innerHTML = `
       <p class="sheet-desc">${T('set.llmDesc')}</p>
+      <div class="scen-bar" style="margin-bottom:6px">
+        <button class="filter-chip" data-preset="deepseek">DeepSeek</button>
+        <button class="filter-chip" data-preset="openai">OpenAI</button>
+      </div>
       <label class="set-field"><span>${T('set.llmBase')}</span>
-        <input class="dict-input" id="llmBase" placeholder="https://api.openai.com/v1" value="${esc(s.llmBase || '')}" /></label>
+        <input class="dict-input" id="llmBase" placeholder="https://api.deepseek.com/v1" value="${esc(s.llmBase || '')}" /></label>
       <label class="set-field"><span>${T('set.llmModel')}</span>
-        <input class="dict-input" id="llmModel" placeholder="gpt-4o-mini" value="${esc(s.llmModel || 'gpt-4o-mini')}" /></label>
+        <input class="dict-input" id="llmModel" placeholder="deepseek-chat" value="${esc(s.llmModel || '')}" /></label>
       <label class="set-field"><span>${T('set.llmKey')}</span>
         <input class="dict-input" id="llmKey" type="password" placeholder="sk-…" value="${esc(s.llmKey || '')}" /></label>
       <div class="hint">${T('set.llmHint')}</div>
@@ -584,8 +588,16 @@ export function mountSettings(root, ctx) {
     const close = openSheet({ title: T('set.llm'), content: box });
     const collect = () => ({
       llmBase: $('#llmBase', box).value.trim(),
-      llmModel: $('#llmModel', box).value.trim() || 'gpt-4o-mini',
+      llmModel: $('#llmModel', box).value.trim() || 'deepseek-chat',
       llmKey: $('#llmKey', box).value.trim(),
+    });
+    box.querySelectorAll('[data-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const ds = btn.dataset.preset === 'deepseek';
+        $('#llmBase', box).value = ds ? 'https://api.deepseek.com/v1' : 'https://api.openai.com/v1';
+        $('#llmModel', box).value = ds ? 'deepseek-chat' : 'gpt-4o-mini';
+        box.querySelectorAll('[data-preset]').forEach((b) => b.classList.toggle('active', b === btn));
+      });
     });
     $('#llmSave', box).addEventListener('click', async () => {
       ctx.settings = await setSettings(collect());

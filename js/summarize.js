@@ -619,7 +619,7 @@ function mapActions(rows, trs, speakers) {
       startMs: src[0]?.startMs || 0,
       src,
     };
-  }).filter((a) => a.text && a.src.length);
+  }).filter((a) => a.text && a.src.length && !COND.test(a.text));
 }
 
 /** 按场景把模型输出映射成与规则结果同构的结构 */
@@ -708,6 +708,13 @@ function mapLlmMeeting(scenario, raw, trs, speakers) {
 
 const SCENARIO_HINT = { meeting: '会议', class: '课堂 / 讲座', interview: '访谈', memo: '速记备忘' };
 
+/** DeepSeek 支持强制 JSON 输出；其他 OpenAI 兼容端点不一定认这个字段，只在认得的情况下带 */
+function jsonMode(cfg) {
+  const base = String(cfg.llmBase || '');
+  const model = String(cfg.llmModel || '');
+  return /deepseek/i.test(base) || /deepseek/i.test(model);
+}
+
 /** 调用大模型，返回与 extractSummaries 同构的结构；失败抛错，由调用方回退规则结果 */
 export async function llmSummarize({ trs, speakers, settings, scenario = 'meeting' }) {
   if (!llmReady(settings)) throw new Error(T('sum.llmUnset'));
@@ -744,6 +751,7 @@ ${shape},
       body: JSON.stringify({
         model: settings.llmModel || 'gpt-4o-mini',
         temperature: 0.2,
+        ...(jsonMode(settings) ? { response_format: { type: 'json_object' } } : {}),
         messages: [{ role: 'system', content: LLM_SYSTEM }, { role: 'user', content: user }],
       }),
     });
@@ -752,7 +760,10 @@ ${shape},
   } finally {
     clearTimeout(timer);
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}${detail ? ` · ${detail.slice(0, 140)}` : ''}`);
+  }
   const data = await res.json().catch(() => null);
   const content = data?.choices?.[0]?.message?.content || '';
   const jsonText = content.replace(/^[\s\S]*?```(?:json)?/i, '').replace(/```[\s\S]*$/, '').trim() || content.trim();
@@ -824,6 +835,7 @@ export async function buildSummaries(recordingId, opts = {}) {
   const dataVersion = dataVersionOf(trs);
   let result = extractSummaries(trs, speakers, { scenario });
   let generator = 'rules';
+  let llmError = '';
 
   if (opts.allowLLM && llmReady(settings)) {
     try {
@@ -831,12 +843,17 @@ export async function buildSummaries(recordingId, opts = {}) {
       if (llm.meeting.overview || llm.bySpeaker.size) {
         result = { meeting: { ...llm.meeting, counts: result.meeting.counts }, bySpeaker: llm.bySpeaker };
         generator = 'llm';
+      } else {
+        llmError = T('sum.llmEmpty');
       }
     } catch (err) {
       // 失败不影响规则结果（规范 8：AI 总结失败，原始数据仍可查看）
       console.warn('大模型总结失败，回退本机规则', err);
+      llmError = err?.message || T('sum.llmFail');
       generator = 'rules';
     }
+  } else if (opts.allowLLM) {
+    llmError = T('sum.llmUnset');
   }
 
   // 保留已有待办的完成状态
@@ -918,6 +935,7 @@ export async function buildSummaries(recordingId, opts = {}) {
   return {
     ok: true,
     generator,
+    llmError,
     dataVersion,
     meeting: meetingRow,
     speakers: speakerRows,
