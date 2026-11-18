@@ -21,6 +21,12 @@ export class Recorder {
     this.onSegment = null;
     this.onLevel = null;
     this.onFrame = null;   // 时域帧回调（实时发言人指示用，不落库）
+    this.onPcm = null;     // 16kHz/16bit/mono 原始 PCM 帧回调（云端流式识别推流用）
+    this._pcmNode = null;
+    this._pcmSink = null;
+    this.pcmFrames = 0;    // 已产出的 16k PCM 帧数（排查「识别中但无音频」用）
+    this.pcmBytes = 0;
+    this.pcmBufferSize = 0;
     this.segmentMs = 30000;
   }
 
@@ -81,6 +87,43 @@ export class Recorder {
     this._freq = new Uint8Array(this.analyser.frequencyBinCount);
     this._time = new Uint8Array(this.analyser.fftSize);
 
+    /* 原始 PCM 采集：实时识别需要 16kHz/16bit/单声道。
+       ScriptProcessor 把 AudioContext（通常 48kHz）的浮点样本线性降采样后回调。
+       零增益节点接到 destination 是为了让回调在部分 WebView 里持续触发（不产生声音）。
+
+       ⚠️ bufferSize 必须是 2 的幂（0 由实现决定）。这里以前写 1600，
+       Android WebView 会直接抛 "must be 0 or a power of two between 256 and 16384"，
+       PCM 节点创建失败 → 引擎一帧音频都收不到 → 状态显示「识别中」却永远不出字。 */
+    if (this.ctx.createScriptProcessor) {
+      for (const size of [2048, 4096, 1024, 8192]) {
+        try {
+          const proc = this.ctx.createScriptProcessor(size, 1, 1);
+          const sink = this.ctx.createGain();
+          sink.gain.value = 0;
+          proc.onaudioprocess = (e) => {
+            if (!this.active || this.paused || !this.onPcm) return;
+            const input = e.inputBuffer.getChannelData(0);
+            const pcm = resampleTo16k(input, this.ctx.sampleRate);
+            if (pcm) {
+              this.pcmFrames += 1;
+              this.pcmBytes += pcm.byteLength;
+              this.onPcm(pcm);
+            }
+          };
+          src.connect(proc);
+          proc.connect(sink);
+          sink.connect(this.ctx.destination);
+          this._pcmNode = proc;
+          this._pcmSink = sink;
+          this.pcmBufferSize = size;
+          break;
+        } catch (err) {
+          console.warn('PCM 采集节点创建失败，尝试更小缓冲', size, err);
+        }
+      }
+    }
+    if (!this._pcmNode) console.warn('PCM 采集不可用，实时识别将没有音频输入');
+
     this._accum = 0;
     this._t0 = performance.now();
     this._pausedAt = null;
@@ -89,6 +132,8 @@ export class Recorder {
     this.levels = [];
     this.segments = [];
     this._buffer = [];
+    this.pcmFrames = 0;
+    this.pcmBytes = 0;
     this.rec.start(2000);
     this.active = true;
     this.paused = false;
@@ -172,6 +217,7 @@ export class Recorder {
     this.active = false;
     this.paused = false;
     cancelAnimationFrame(this._raf);
+    this._disconnectPcm();
     if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
     if (this.ctx) { try { await this.ctx.close(); } catch { /* ignore */ } }
 
@@ -184,9 +230,37 @@ export class Recorder {
     try { this.rec?.stop(); } catch { /* ignore */ }
     this.active = false;
     cancelAnimationFrame(this._raf);
+    this._disconnectPcm();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.ctx?.close().catch(() => {});
   }
+
+  _disconnectPcm() {
+    try { this._pcmNode?.disconnect(); } catch { /* ignore */ }
+    try { this._pcmSink?.disconnect(); } catch { /* ignore */ }
+    if (this._pcmNode) this._pcmNode.onaudioprocess = null;
+    this._pcmNode = null;
+    this._pcmSink = null;
+  }
+}
+
+/** 浮点样本（ctx.sampleRate）→ 16kHz 16bit 单声道 ArrayBuffer */
+function resampleTo16k(input, srcRate) {
+  if (!input || !input.length) return null;
+  const target = 16000;
+  const ratio = srcRate / target;
+  const outLen = Math.floor(input.length / ratio);
+  if (outLen < 1) return null;
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i += 1) {
+    const pos = i * ratio;
+    const i0 = Math.floor(pos);
+    const frac = pos - i0;
+    const v = (input[i0] || 0) * (1 - frac) + (input[i0 + 1] || input[i0] || 0) * frac;
+    const clamped = Math.max(-1, Math.min(1, v));
+    out[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+  }
+  return out.buffer;
 }
 
 /** 电平 → 归一化波形点 */

@@ -32,3 +32,6 @@ android/build/
 android/app/build/
 # 构建产物，4MB+ 不适合进 git；用 npm run android:build 重建
 dist/*.apk
+
+# 弃用的官方 SDK 包（7MB，会导致 SIGSEGV），不再参与构建
+android/app/libs/*.aar

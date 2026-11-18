@@ -8,14 +8,24 @@
 ## 快速开始
 
 ```bash
-python serve.py          # 然后打开 http://127.0.0.1:8778/
+python serve.py          # 网页预览：http://127.0.0.1:8778/
+node asr-proxy.mjs       # 实时识别代理（Only when using Bailian live streaming）：ws://127.0.0.1:8790
 ```
 
 > 必须用本地服务器打开（`file://` 无法使用麦克风与 ES Module）。
 > 不要用 `python -m http.server`：Windows 下它会把 `.js` 当 `text/plain`，模块脚本会加载失败。
+> `asr-proxy.mjs` 只在「实时识别引擎」选了百炼实时流/自动模式时需要；不启动它，应用会自动回退到浏览器或系统识别。
 
-- 推荐 Chrome / Edge（实时识别依赖浏览器 Speech Recognition）。
-- 手机访问：电脑与手机同一局域网，把地址换成电脑内网 IP，麦克风需要 `https` 或 `localhost`，因此手机端请用 Chrome 的端口转发或临时 https 隧道。
+- **实时识别引擎**（设置 → 通用 → 实时识别引擎）：
+  - **自动（推荐）**：真机走「百炼原生 SDK → 系统识别 → 浏览器」；网页走「云端流式（经代理）→ 浏览器」。
+  - **百炼SDK（真机独立）**：集成阿里官方 Fun-ASR-Realtime Android SDK，手机原生直连百炼——**不用电脑、不用代理、不用自建服务器**。Key 在 SDK 初始化参数里完成鉴权，绕开了 WebView 不能自定义请求头的限制。需在「实时识别代理」里填 DashScope Key（留空则复用云端识别接口里百炼的 Key）。识别质量最稳，支持方言热词，按量计费。
+  - **百炼实时流（经代理）**：走 WebView 的 WebSocket，必须经 `asr-proxy.mjs` 转发注入鉴权头。仅当你不想用原生 SDK 时用；需要电脑常开代理。
+  - **系统识别（真机）**：调用手机系统 SpeechRecognizer，无需 Key 和代理，完全离线，但准确率随机型/厂商变化。
+  - **浏览器默认**：Web Speech API，Edge 可用；Chrome 在国内通常连不上 Google 识别服务。
+- 真机用百炼 SDK：设置里选「百炼SDK」或保持「自动」，填好 Key 即可独立使用，手机不需要连电脑。
+- 真机用代理模式（仅选「百炼实时流」时）：启动 `asr-proxy.mjs` 后，终端会打印「手机端请填下面任一地址」，照抄其中一条（形如 `ws://192.168.x.x:8790/ws/asr`，x 是电脑实际 IP，**不要**用 127.0.0.1 或照抄示例数字）。电脑与手机需同一 WiFi，并放行防火墙 8790 端口（首次弹窗选允许）。
+- SDK 说明：`android/app/libs/nuisdk-release.aar` 来自阿里云官方整合包 V2.7.6-037（MD5 已校验），含 arm64-v8a / armeabi-v7a / x86_64 三种架构。
+- 手机浏览器直接开网页仍受麦克风需安全上下文限制，建议用装在手机上的 APK，或 Chrome 端口转发 / https 隧道。
 - 首次进入可点「载入演示记录」直接体验文稿页、播放联动与要点提炼（合成音频 + 示例文稿，明确标注为演示数据）。
 
 ## 已实现（对照产品文档）

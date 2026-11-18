@@ -1,6 +1,6 @@
 {
   "name": "voice-notes",
-  "version": "1.0.0",
+  "version": "1.4.0",
   "description": "> 原名「语记」因名称已被占用，产品更名为 **听文 TingWen**。应用内文案、离线缓存、数据库均已同步；旧库 `yuji_db` 会在首次打开时自动迁移到 `tingwen_db`，已录的内容不会丢。产品方案文档的文件名保持原样。",
   "main": "sw.js",
   "scripts": {
@@ -21,8 +21,10 @@
   },
   "homepage": "https://github.com/andyzhang201310-coder/tingwen#readme",
   "dependencies": {
+    "@capacitor-community/speech-recognition": "^7.0.1",
     "@capacitor/android": "^8.6.2",
-    "@capacitor/core": "^8.6.2"
+    "@capacitor/core": "^8.6.2",
+    "ws": "^8.23.0"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.6.2"

@@ -56,6 +56,13 @@ const ENGINES = () => [
   { label: T('set.engineLocal'), value: 'local' },
   { label: T('set.engineCloud'), value: 'cloud' },
 ];
+const LIVE_ENGINES = () => [
+  { label: T('set.liveAuto'), value: 'auto' },
+  { label: T('set.liveSdk'), value: 'sdk' },
+  { label: T('set.liveCloud'), value: 'cloud' },
+  { label: T('set.liveNative'), value: 'native' },
+  { label: T('set.liveBrowser'), value: 'browser' },
+];
 
 export function mountSettings(root, ctx) {
   root.innerHTML = `
@@ -105,6 +112,8 @@ export function mountSettings(root, ctx) {
     const { quota, usage } = await storageInfo();
     const pct = quota ? Math.min(100, (usage / quota) * 100) : 0;
     const dictCount = parseDict(s.customDict).length;
+    const asrCfg = s.asrProviders?.[s.asrProvider] || {};
+    const liveKey = s.liveAsrKey || s.asrProviders?.bailian?.key || '';
 
     scroll.innerHTML = `
       <div class="settings-hero">
@@ -120,10 +129,22 @@ export function mountSettings(root, ctx) {
         ${row({ icon: 'bolt', label: T('set.mode'), value: current(MODES(), s.transcribeMode), act: 'mode' })}
         ${row({ icon: 'cloud', label: T('set.engine'), value: current(ENGINES(), s.engineMode), act: 'engine' })}
         ${row({
+          icon: 'mic',
+          label: T('set.liveEngine'),
+          value: current(LIVE_ENGINES(), s.liveEngine || 'auto'),
+          act: 'live-engine',
+        })}
+        ${row({
           icon: 'cloud',
           label: T('set.asrCloud'),
-          value: `${T(providerById(s.asrProvider).labelKey)} · ${s.asrCloudUrl ? T('set.configured') : T('set.notConfigured')}`,
+          value: `${T(providerById(s.asrProvider).labelKey)} · ${asrCfg.key ? T('set.configured') : T('set.notConfigured')}`,
           act: 'asr-cloud',
+        })}
+        ${row({
+          icon: 'bolt',
+          label: T('set.liveProxy'),
+          value: s.asrProxyUrl && liveKey ? T('set.configured') : T('set.notConfigured'),
+          act: 'live-proxy',
         })}
       </div>
 
@@ -240,6 +261,17 @@ export function mountSettings(root, ctx) {
       if (v) { ctx.settings = await setSettings({ engineMode: v }); await render(); }
       return;
     }
+    if (act === 'live-engine') {
+      const v = await choiceSheet({
+        title: T('set.liveEngine'),
+        desc: T('set.liveEngineDesc'),
+        options: LIVE_ENGINES(),
+        value: s.liveEngine || 'auto',
+      });
+      if (v) { ctx.settings = await setSettings({ liveEngine: v }); await render(); }
+      return;
+    }
+    if (act === 'live-proxy') { openLiveProxy(); return; }
     if (act === 'trash') { ctx.navigate('#/trash'); return; }
 
     if (act === 'dict') { openDict(); return; }
@@ -358,6 +390,63 @@ export function mountSettings(root, ctx) {
       close();
       await render();
       toast(T('set.diarSaved'));
+    });
+  }
+
+  function openLiveProxy() {
+    const box = document.createElement('div');
+    const curKey = s.liveAsrKey || (s.asrProviders?.bailian?.key || '');
+    box.innerHTML = `
+      <p class="sheet-desc">${T('set.liveProxyDesc')}</p>
+      <label class="set-field"><span>${T('set.liveProxyUrl')}</span>
+        <input class="dict-input" id="lpUrl" placeholder="ws://127.0.0.1:8790/ws/asr" value="${esc(s.asrProxyUrl || '')}" /></label>
+      <label class="set-field"><span>${T('set.liveAsrKey')}</span>
+        <input class="dict-input" id="lpKey" type="password" placeholder="••••（留空则复用百炼接口里的 Key）" value="${esc(curKey)}" /></label>
+      <label class="set-field"><span>${T('set.asrWorkspaceId')}</span>
+        <input class="dict-input" id="lpWs" placeholder="可选" value="${esc(s.asrWorkspaceId || '')}" /></label>
+      <div class="hint">${T('set.liveProxyHint')}</div>
+      <div style="display:flex;gap:10px;margin-top:14px">
+        <button class="ghost outline" id="lpTest" style="flex:1">${T('set.test')}</button>
+        <button class="btn-primary" id="lpSave" style="flex:1">${T('common.save')}</button>
+      </div>`;
+    const close = openSheet({ title: T('set.liveProxy'), content: box });
+    const collect = () => ({
+      asrProxyUrl: $('#lpUrl', box).value.trim(),
+      liveAsrKey: $('#lpKey', box).value.trim(),
+      asrWorkspaceId: $('#lpWs', box).value.trim(),
+    });
+    $('#lpSave', box).addEventListener('click', async () => {
+      ctx.settings = await setSettings(collect());
+      close();
+      await render();
+      toast(T('set.liveProxySaved'));
+    });
+    $('#lpTest', box).addEventListener('click', async () => {
+      const btn = $('#lpTest', box);
+      const url = $('#lpUrl', box).value.trim();
+      if (!url) { toast(T('set.liveNeedProxy')); return; }
+      btn.textContent = T('set.testing');
+      btn.disabled = true;
+      try {
+        /* 用 http 健康检查探测代理是否在跑（把 ws/wss 换成 http/https） */
+        let probe = url.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
+        try {
+          const u = new URL(probe);
+          u.pathname = '/healthz';
+          u.search = '';
+          probe = u.toString();
+        } catch { /* ignore */ }
+        const res = await fetch(probe, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!data?.ok) throw new Error('proxy not ready');
+        toast(T('set.liveProxyOk'));
+      } catch (err) {
+        toast(T('set.liveProxyFail', { err: err?.message || '' }));
+      } finally {
+        btn.textContent = T('set.test');
+        btn.disabled = false;
+      }
     });
   }
 

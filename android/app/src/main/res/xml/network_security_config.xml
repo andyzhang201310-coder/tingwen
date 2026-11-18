@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 放行局域网明文流量：真机 WebView 需要通过 ws:// 连接电脑上的 ASR 代理 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

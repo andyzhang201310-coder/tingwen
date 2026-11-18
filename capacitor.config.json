@@ -5,7 +5,8 @@
   "android": {
     "allowMixedContent": true,
     "captureInput": true,
-    "useLegacyBridge": false
+    "useLegacyBridge": false,
+    "loggingBehavior": "none"
   },
   "server": {
     "androidScheme": "http"

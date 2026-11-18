@@ -56,6 +56,13 @@ export const DEFAULT_SETTINGS = {
   asrCloudUrl: '',            // 当前服务商的地址（同步字段，勿直接改）
   asrCloudKey: '',
   asrCloudModel: 'whisper-1',
+  /* 实时识别引擎（网页 + 真机）
+     auto：云端流式 → 回退系统/浏览器；cloud：只用云端流式；
+     native：真机系统识别；browser：仅 Web Speech API */
+  liveEngine: 'auto',
+  asrProxyUrl: 'ws://127.0.0.1:8790/ws/asr',  // 本地 ASR 代理（真机需填电脑局域网地址）
+  liveAsrKey: '',              // 实时识别用的 DashScope Key；留空则复用 bailian 的 Key
+  asrWorkspaceId: '',          // 百炼业务空间 ID（用专属域名时需要）
   repairAuto: true,           // 网络恢复后自动补识别（需已配置云端识别接口）
   /* 智能整理与翻译（产品文档 2.3） */
   summaryScenario: 'auto',    // auto（按文件夹推断）| meeting | class | interview | memo

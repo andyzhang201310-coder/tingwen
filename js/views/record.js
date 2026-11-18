@@ -6,7 +6,8 @@ import {
   addTranscript, purgeRecording, listTranscripts, verifySegments,
 } from '../store.js';
 import { Recorder } from '../audio.js';
-import { createASR, estimateSpan } from '../asr.js';
+import { createLiveASR } from '../asr-live.js';
+import { estimateSpan } from '../asr.js';
 import { analyze, suggestTitle } from '../ai.js';
 import { defaultTitle, folderLabel } from '../model.js';
 import { T } from '../i18n.js';
@@ -89,7 +90,9 @@ export function mountRecord(root, ctx) {
   let interimText = '';
   let lastEnd = 0;
   let engineMode = ctx.settings.engineMode || 'auto';
+  let activeEngine = '';     // 实际生效的识别引擎：cloud | native | browser
   let asrState = 'starting';
+  let lastErrCode = '';      // 最近一次识别引擎错误码，便于真机排查
   let finished = false;
   let paused = false;
   let wakeLock = null;
@@ -150,6 +153,8 @@ export function mountRecord(root, ctx) {
     const parts = [];
     const modeText = engineMode === 'local' ? T('rec.modeLocal') : engineMode === 'cloud' ? T('rec.modeCloud') : T('rec.modeAuto');
     parts.push(esc(modeText));
+    const ENG_LABEL = { sdk: T('rec.engineSdkLive'), cloud: T('rec.engineCloudLive'), native: T('rec.engineNativeLive'), browser: T('rec.engineBrowserLive') };
+    if (activeEngine && ENG_LABEL[activeEngine]) parts.push(esc(ENG_LABEL[activeEngine]));
     const stateMap = {
       listening: T('rec.stateListening'),
       starting: T('rec.stateStarting'),
@@ -159,8 +164,12 @@ export function mountRecord(root, ctx) {
       unstable: T('rec.stateUnstable'),
       error: T('rec.stateError'),
       paused: T('rec.statePaused'),
+      switch: T('rec.stateSwitch'),
     };
     parts.push(esc(stateMap[asrState] || T('rec.stateListening')));
+    if ((asrState === 'error' || asrState === 'network') && lastErrCode) {
+      parts.push(esc(T('rec.errCode', { code: lastErrCode })));
+    }
     if (!navigator.onLine) parts.push(esc(T('rec.offline')));
     const segBytes = recorder.segments.reduce((n, x) => n + x.blob.size, 0);
     const bufBytes = (recorder._buffer || []).reduce((n, b) => n + b.size, 0);
@@ -196,11 +205,16 @@ export function mountRecord(root, ctx) {
     unstable: ['rec.hintUnstableTitle', 'rec.hintUnstableBody'],
   };
 
-  /* 网络类提示的正文按浏览器分流：Chrome 是 Google 不通，Edge 是微软服务或代理抖动 */
+  /* 网络类提示先按「当前引擎」分流，只有浏览器引擎才按 UA 细分为 Chrome / Edge。
+     之前一律按 UA 分流，导致跑百炼云引擎时也弹「Chrome 走 Google」，文不对题。 */
   const NET_BODY = {
     chrome: 'rec.hintNetBody',
     edge: 'rec.hintNetBodyEdge',
     other: 'rec.hintNetBodyGeneric',
+  };
+  const NET_BY_ENGINE = {
+    cloud: ['rec.hintNetTitleCloud', 'rec.hintNetBodyCloud'],
+    native: ['rec.hintNetTitleNative', 'rec.hintNetBodyNative'],
   };
 
   let netDownAt = 0;        // 本轮网络错误第一次出现的时刻
@@ -231,7 +245,15 @@ export function mountRecord(root, ctx) {
       /* 一次抖动就弹整块解释会打断阅读：至少持续 2.2 秒，或重试已连续失败 2 次，才算「真的连不上」 */
       const sustained = netAttempts >= 2 || Date.now() - netDownAt >= NET_HINT_DELAY;
       if (!sustained) h = null;
+      else if (NET_BY_ENGINE[activeEngine]) h = NET_BY_ENGINE[activeEngine];
       else h = [h[0], NET_BODY[speechHost()] || NET_BODY.chrome];
+    }
+    /* 引擎说「在听」但一帧 PCM 都没采到：实时识别必然不出字。
+       这里主动提示，避免界面一直停在「识别中」让人误以为在等语音。 */
+    if (!h && !finished && asrState === 'listening'
+        && (activeEngine === 'sdk' || activeEngine === 'cloud')
+        && recorder.elapsed > 5000 && !recorder.pcmFrames) {
+      h = ['rec.hintNoPcmTitle', 'rec.hintNoPcmBody'];
     }
     if (!h) {
       hintEl.hidden = true;
@@ -287,17 +309,25 @@ export function mountRecord(root, ctx) {
   }
 
   /* ── 识别结果落库 ── */
-  async function onFinal({ text, at }) {
-    if (!rec) return;
-    const { startMs, endMs } = estimateSpan(text, at, lastEnd);
+  /** 一句定稿：纠错 → 入库 → 上屏。任何一步失败都要在状态栏说出来，
+      不能出现「界面有字、库里没字」这种最难自查的状态。 */
+  async function commitText(text, at) {
+    if (!rec) return false;
+    const clean = String(text || '').trim();
+    if (!clean) return false;
+    /* 引擎在 stop 时会把最后一句重发一次：相邻重复不再入库，避免文稿出现两遍 */
+    const prev = lines[lines.length - 1];
+    if (prev && prev.text === clean) { setInterim(''); return false; }
+
+    const { startMs, endMs } = estimateSpan(clean, at, lastEnd);
     /* 状态一直显示 listening 但长时间没有结果时，也把这段算作缺口 */
     if (openDown && startMs - openDown.startMs > 1200) {
       downWindows.push({ startMs: openDown.startMs, endMs: startMs });
       openDown = null;
     }
     lastEnd = endMs;
-    const fix = fixOpts.on ? correctText(text, fixOpts) : null;
-    const shown = fix?.changed ? fix.text : text;
+    const fix = fixOpts.on ? correctText(clean, fixOpts) : null;
+    const shown = fix?.changed ? fix.text : clean;
     try {
       await addTranscript({
         recordingId: rec.id,
@@ -306,7 +336,7 @@ export function mountRecord(root, ctx) {
         text: shown,
         engine: 'browser',
         status: 'final',
-        raw: fix?.changed ? text : null,
+        raw: fix?.changed ? clean : null,
         corrections: fix?.changed ? fix.corrections : null,
         corrected: fix?.changed ? 1 : 0,
       });
@@ -314,11 +344,28 @@ export function mountRecord(root, ctx) {
       appendLine(startMs, shown, fix?.corrections || []);
       fixCount += fix?.count || 0;
       setInterim('');
+      return true;
     } catch (err) {
       console.warn('保存转录失败', err);
       saveError = T('rec.saveTranscriptFailed');
       paintStatus();
+      return false;
     }
+  }
+
+  function onFinal({ text, at }) {
+    commitText(text, at).catch((err) => {
+      console.warn('转录入库异常', err);
+      saveError = T('rec.saveTranscriptFailed');
+      paintStatus();
+    });
+  }
+
+  /** 收尾：引擎最后那句若只有临时结果、始终没等到定稿，按已显示的字补存一条 */
+  async function flushInterim() {
+    const text = String(interimText || '').trim();
+    if (!text) return;
+    await commitText(text, Math.round(recorder.elapsed));
   }
 
   /* 识别不可用的状态：这些区间里录到的音频没有任何转录，记成待补识别 */
@@ -385,13 +432,14 @@ export function mountRecord(root, ctx) {
       }
     };
 
-    // 识别
-    asr = createASR({
-      lang: ctx.settings.lang === 'en-US' ? 'en-US' : 'zh-CN',
+    // 识别：统一适配层按设置与平台选择 云端流式 / 原生系统 / Web Speech API
+    asr = createLiveASR({
+      settings: ctx.settings,
       getElapsed: () => Math.round(recorder.elapsed),
       onFinal,
       onInterim: ({ text }) => setInterim(text),
       onStatus: (s) => {
+        if (s.engine && s.engine !== activeEngine) activeEngine = s.engine;
         if (s.state === 'network') {
           if (!netDownAt) netDownAt = Date.now();
           netAttempts = s.attempts || 0;
@@ -402,16 +450,22 @@ export function mountRecord(root, ctx) {
           clearNetHintTimer();
         }
         asrState = s.state;
+        if (s.state === 'error' || s.state === 'network' || s.state === 'unsupported' || s.state === 'denied') {
+          lastErrCode = s.code ? String(s.code) : '';
+        } else if (s.state === 'listening' || s.state === 'switch') {
+          lastErrCode = '';
+        }
         trackDown(s.state);
         paintStatus();
         paintAsrHint();
       },
     });
-    asrState = asr.supported ? 'listening' : 'unsupported';
-    if (asr.supported) asr.start();
-    /* 把录音电平喂给识别层：它在「该不该重开会话」时要用这个判断
-       现在是人没说话（闲着，重开只会切掉下一句开头）还是真的卡死了 */
+    asrState = asr.supported ? 'starting' : 'unsupported';
+    /* PCM 帧推给云端流式引擎；浏览器/原生引擎的 feed 是空操作，无副作用 */
+    recorder.onPcm = (pcm) => { if (!paused) asr?.feed?.(pcm); };
+    /* 电平喂给识别层：Web Speech API 引擎用它判断「没人说话」还是「会话卡死」 */
     recorder.onLevel = (t, v) => asr?.voice?.(v);
+    if (asr.supported) asr.start();
     paintStatus();
     paintAsrHint();
 
@@ -434,6 +488,7 @@ export function mountRecord(root, ctx) {
         });
       } catch { /* 忽略 */ }
       paintStatus();
+      paintAsrHint();
     }, 4000);
 
     if ('wakeLock' in navigator) {
@@ -477,15 +532,24 @@ export function mountRecord(root, ctx) {
     clearInterval(timerTick);
     cancelAnimationFrame(rafId);
     closeDownWindow();
-    asr?.destroy();
-    try { await wakeLock?.release(); } catch { /* 忽略 */ }
 
+    /* 顺序很关键：先停采集（不再有 PCM 进来）→ 让引擎收尾（finish-task 会把最后一句定稿）
+       → 等收尾结果回来 → 补存还没定稿的那句 → 最后才拆监听。
+       原来的顺序是先 destroy 再 stop 录音，最后一次定稿必然被丢掉。 */
     let result = null;
     try {
       result = await recorder.stop();
     } catch (err) {
       console.warn('停止录音失败', err);
     }
+    try { await asr?.stop?.(); } catch { /* 忽略 */ }
+    if (activeEngine === 'sdk' || activeEngine === 'cloud') {
+      /* 云端/直连引擎的尾句要等服务端回包，给一个收尾窗口 */
+      await new Promise((r) => setTimeout(r, 900));
+    }
+    try { await flushInterim(); } catch { /* 忽略 */ }
+    asr?.destroy();
+    try { await wakeLock?.release(); } catch { /* 忽略 */ }
     if (!rec) { ctx.navigate('#/', { replace: true }); return; }
 
     const duration = result?.durationMs || Math.round(recorder.elapsed);
@@ -607,7 +671,7 @@ export function mountRecord(root, ctx) {
         recorder.resume();
         asr?.resume();
         paused = false;
-        asrState = asr?.supported ? 'listening' : 'unsupported';
+        asrState = asr?.active ? 'listening' : 'starting';
         pauseBtn.innerHTML = icons.pause;
         setBadge(false);
         toast(T('rec.resumed'));
