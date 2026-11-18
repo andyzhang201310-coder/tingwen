@@ -70,6 +70,8 @@ Content-Type: multipart/form-data
       { "segments": [{ "startMs": 0, "endMs": 3200, "text": "..." }] }
 ```
 
+**可直接用的服务**：硅基流动（`https://api.siliconflow.cn/v1/audio/transcriptions`，模型 `FunAudioLLM/SenseVoiceSmall`，国内直连、价格页当前标免费、需实名认证）已端到端验证可用，中文识别质量好。SenseVoice 一类模型会把情感/事件标签拼进文本（如末尾 `😊`、`<|happy|>`），落库前由 `cleanCloudText()` 统一清掉。OpenAI 官方 `whisper-1` / `gpt-4o-transcribe` 将于 2027-02-26 下线，新配置建议用 `gpt-transcribe` 或硅基流动。
+
 **已知边界**：MediaRecorder 的分段只有第一段带容器头，中间段无法单独解码，所以补识别会把整段音频解码一次再切片——超过 20 分钟不自动执行（16 kHz Float32 约 3.84 MB/分钟），只标注原因。要支持超长录音，得换成分段可独立解码的容器（如原生版的 m4a 分段）。
 
 ## AI 纠错（识别错误自动纠正）

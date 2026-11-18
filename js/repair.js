@@ -153,6 +153,20 @@ function sliceMs(decoded, startMs, endMs) {
 
 /* ───────── 云端识别调用 ───────── */
 
+/**
+ * 清洗云端返回的文本。
+ * SenseVoice 一类模型会把情感/音频事件标签直接拼进文本（如末尾的 😊、😂，
+ * 或 <|happy|> / <|Speech|> 这类 token），这些对转写文稿是噪音，需去掉。
+ * 只挑明确的标签与表情，不碰正常标点与中日韩文字。
+ */
+function cleanCloudText(s = '') {
+  return String(s)
+    .replace(/<\|[A-Za-z]+\|>/g, '')                    // <|happy|> / <|Speech|> 等模型 token
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '') // 情感/事件 emoji
+    .replace(/[ \t]{2,}/g, ' ')                           // 去标签后可能留下的重复空格
+    .trim();
+}
+
 async function postClip({ url, key, model, lang, blob, startMs, endMs }) {
   const form = new FormData();
   form.append('file', blob, `clip-${startMs}-${endMs}.wav`);
@@ -173,9 +187,9 @@ async function postClip({ url, key, model, lang, blob, startMs, endMs }) {
   const data = await res.json().catch(() => null);
   if (!data) throw new Error('响应不是 JSON');
   if (Array.isArray(data.segments) && data.segments.length) {
-    return data.segments.map((s) => ({ text: (s.text || '').trim(), startMs: s.startMs ?? s.start, endMs: s.endMs ?? s.end })).filter((s) => s.text);
+    return data.segments.map((s) => ({ text: cleanCloudText(s.text), startMs: s.startMs ?? s.start, endMs: s.endMs ?? s.end })).filter((s) => s.text);
   }
-  const text = (data.text || data.transcription || '').trim();
+  const text = cleanCloudText(data.text || data.transcription);
   return text ? [{ text, startMs, endMs }] : [];
 }
 
