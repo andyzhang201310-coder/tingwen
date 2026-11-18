@@ -26,6 +26,7 @@ export const DEFAULT_SETTINGS = {
   transcribeMode: 'accurate', // accurate | fast
   showHistory: true,
   saveRecording: true,
+  audioQuality: 'standard',   // low | standard | high，对应 40/64/128 kbps
   importAudio: true,
   soundEffect: true,
   autoCopy: false,

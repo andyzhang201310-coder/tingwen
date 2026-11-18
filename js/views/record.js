@@ -3,9 +3,9 @@ import { icons } from '../icons.js';
 import { toast, openSheet, confirmDialog, renderWave, timerHtml } from '../ui.js';
 import {
   createRecording, updateRecording, addSegment, clearSegments,
-  addTranscript, purgeRecording, listTranscripts, verifySegments, setSettings,
+  addTranscript, purgeRecording, listTranscripts, verifySegments, setSettings, getSettings,
 } from '../store.js';
-import { Recorder } from '../audio.js';
+import { Recorder, bitrateOf } from '../audio.js';
 import { createLiveASR } from '../asr-live.js';
 import { estimateSpan } from '../asr.js';
 import { analyze, suggestTitle } from '../ai.js';
@@ -434,16 +434,43 @@ export function mountRecord(root, ctx) {
   }
 
   /* ── 启动 ── */
-  async function boot() {
-    /* 录音前告知（说话人规范 §9「录音前展示必要的录音和参与者告知提示」）：
-       必须排在打开麦克风之前——先录再告知等于没告知。只问一次，确认后写入设置。 */
-    if (!ctx.settings.recordNoticeSeen) {
-      const agreed = await confirmDialog({
-        title: T('rec.noticeTitle'),
-        message: T('rec.noticeBody'),
-        confirmText: T('rec.noticeOk'),
-        cancelText: T('rec.noticeCancel'),
+  /**
+   * 录音前告知的覆盖层（说话人规范 §9.1）。
+   *
+   * 为什么不用 openSheet 弹层：弹层系统在「被新弹层顶掉」时会把旧的 onClose
+   * 当作取消回调补发一次，于是已确认过的用户会被误判成拒绝、直接踢回首页。
+   * 这里做成独立覆盖层，只认用户真正点下的那个按钮；底层录音页 DOM 保持完整，
+   * 后续 paint 不会找不到元素。
+   */
+  function noticeGate() {
+    return new Promise((resolve) => {
+      const layer = document.createElement('div');
+      layer.className = 'notice-gate';
+      layer.innerHTML = `
+        <div class="notice-card">
+          <span class="notice-icon">${icons.mic}</span>
+          <h3>${esc(T('rec.noticeTitle'))}</h3>
+          <p>${esc(T('rec.noticeBody'))}</p>
+          <button class="btn-primary" data-ok>${esc(T('rec.noticeOk'))}</button>
+          <button class="ghost" data-no>${esc(T('rec.noticeCancel'))}</button>
+        </div>`;
+      root.appendChild(layer);
+      layer.addEventListener('click', (e) => {
+        if (e.target.closest('[data-ok]')) { layer.remove(); resolve(true); return; }
+        if (e.target.closest('[data-no]')) { layer.remove(); resolve(false); }
       });
+    });
+  }
+
+  async function boot() {
+    /* 录音前告知必须排在打开麦克风之前——先录再告知等于没告知。
+       每次现读一次设置：ctx.settings 由 main.js 异步加载，冷启动直接落在
+       #/record（比如从通知点进来）时，内存里的值可能是上一轮的空对象。 */
+    let latest = ctx.settings;
+    try { latest = { ...ctx.settings, ...(await getSettings()) }; } catch { /* 读不到就用内存值 */ }
+    ctx.settings = latest;
+    if (!latest.recordNoticeSeen) {
+      const agreed = await noticeGate();
       if (!agreed) {
         ctx.navigate('#/', { replace: true });
         return;
@@ -455,7 +482,7 @@ export function mountRecord(root, ctx) {
 
     // 先拿到麦克风，再落库，避免无权限时留下空记录
     try {
-      await recorder.start();
+      await recorder.start({ bitrate: bitrateOf(ctx.settings.audioQuality) });
     } catch (err) {
       renderError(err);
       return;
@@ -471,6 +498,7 @@ export function mountRecord(root, ctx) {
       engineMode,
       engineUsed: 'browser',
       mime: recorder.mime,
+      bitrate: recorder.bitrate,
       startedAt: Date.now(),
     });
 

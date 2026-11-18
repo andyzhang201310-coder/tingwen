@@ -27,6 +27,11 @@ const MODES = () => [
   { label: T('set.modeAccurate'), value: 'accurate' },
   { label: T('set.modeFast'), value: 'fast' },
 ];
+const AUDIO_QUALITIES = () => [
+  { label: T('set.aqLow'), value: 'low' },
+  { label: T('set.aqStandard'), value: 'standard' },
+  { label: T('set.aqHigh'), value: 'high' },
+];
 const LEVELS = () => [
   { label: T('set.levelConservative'), value: 'conservative' },
   { label: T('set.levelStandard'), value: 'standard' },
@@ -152,6 +157,7 @@ export function mountSettings(root, ctx) {
         <div class="section-label">${T('set.groupRec')}</div>
         ${toggle({ icon: 'clock', label: T('set.showHistory'), key: 'showHistory', sub: s.showHistory ? '' : T('set.showHistorySub') })}
         ${toggle({ icon: 'storage', label: T('set.saveRecording'), key: 'saveRecording', sub: s.saveRecording ? '' : T('set.saveRecordingSub') })}
+        ${row({ icon: 'audioFile', label: T('set.audioQuality'), value: current(AUDIO_QUALITIES(), s.audioQuality || 'standard'), act: 'audio-quality' })}
         ${toggle({ icon: 'audioFile', label: T('set.importAudio'), key: 'importAudio' })}
         ${toggle({ icon: 'waveform', label: T('set.sound'), key: 'soundEffect' })}
         ${toggle({ icon: 'sparkle', label: T('set.autoCorrect'), key: 'autoCorrect', sub: s.autoCorrect ? T('set.autoCorrectOn') : T('set.autoCorrectOff') })}
@@ -310,6 +316,16 @@ export function mountSettings(root, ctx) {
         ctx.settings = await setSettings({ translateLang: v === 'auto' ? '' : v });
         await render();
       }
+      return;
+    }
+    if (act === 'audio-quality') {
+      const v = await choiceSheet({
+        title: T('set.audioQuality'),
+        desc: T('set.audioQualityDesc'),
+        options: AUDIO_QUALITIES(),
+        value: s.audioQuality || 'standard',
+      });
+      if (v) { ctx.settings = await setSettings({ audioQuality: v }); await render(); }
       return;
     }
     if (act === 'correct-level') {

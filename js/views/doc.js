@@ -702,6 +702,33 @@ export function mountDoc(root, ctx, id) {
   }
 
   /* ── 导出 ── */
+  /**
+   * 只认文稿区内的选区（产品文档 7.3「支持复制全文、复制选段」）。
+   * 选中标题栏、工具栏按钮文字时不算「选段」，否则用户想复制全文会拿到半句界面文案。
+   */
+  function selectionText() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return '';
+    const raw = sel.toString().trim();
+    if (!raw) return '';
+    const node = sel.anchorNode;
+    const el = node && (node.nodeType === 3 ? node.parentNode : node);
+    const scroll = $('#docScroll', root);
+    if (!el || !scroll || !scroll.contains(el)) return '';
+    return raw;
+  }
+
+  /** 有选区复制选区，没有就复制全文 */
+  async function copySelectionOrAll() {
+    const sel = selectionText();
+    const text = sel || transcriptText();
+    if (!text.trim()) { toast(T('doc.noTranscript')); return; }
+    const ok = await copyText(text);
+    toast(ok
+      ? (sel ? T('doc.copiedSel', { n: sel.length }) : T('doc.copiedAll'))
+      : T('export.copyFailed'));
+  }
+
   /** 导出带发言人：未确认身份时用临时编号，不冒充真名 */
   function transcriptText() {
     const nameOf = (t) => {
@@ -713,9 +740,10 @@ export function mountDoc(root, ctx, id) {
 
   function openExport() {
     const node = document.createElement('div');
+    const selNow = selectionText();
     node.innerHTML = `
       <div class="sheet-actions">
-        <button class="sheet-action" data-e="copy">${icons.copy}<span>${T('export.copyAll')}</span></button>
+        <button class="sheet-action" data-e="copy">${icons.copy}<span>${selNow ? T('doc.copySelN', { n: selNow.length }) : T('export.copyAll')}</span></button>
         <button class="sheet-action" data-e="docx">${icons.doc}<span>${T('export.docx')}</span></button>
         <button class="sheet-action" data-e="txt">${icons.doc}<span>${T('export.txt')}</span></button>
         <button class="sheet-action" data-e="md">${icons.doc}<span>${T('export.md')}</span></button>
@@ -740,8 +768,11 @@ export function mountDoc(root, ctx, id) {
       };
       const labels = { points: T('export.mdPoints'), body: T('export.mdBody'), empty: T('common.none') };
       if (k === 'copy') {
-        const ok = await copyText(`${head}\n${transcriptText()}`);
-        toast(ok ? T('export.copied') : T('export.copyFailed'));
+        const sel = selNow;
+        const ok = await copyText(sel || `${head}\n${transcriptText()}`);
+        toast(ok
+          ? (sel ? T('doc.copiedSel', { n: sel.length }) : T('export.copied'))
+          : T('export.copyFailed'));
       } else if (k === 'txt') {
         downloadText(`${safeName(rec.title)}.txt`, `${head}\n${transcriptText()}`);
         toast(T('export.doneTxt'));

@@ -1,4 +1,16 @@
 /** 录音器：持续采集 + 30 秒分段 + 电平采样（对齐文档 5.1 / 5.2） */
+
+/**
+ * 音频质量档位 → MediaRecorder 码率（产品文档 7.1 设置页「音频质量」）。
+ * 语音只需要 16k 采样，32 kbps opus 已经够听清；128 kbps 留给需要保留环境声或后制的场景。
+ * 一小时录音大致体积：40 kbps≈18MB、64 kbps≈29MB、128 kbps≈58MB。
+ */
+export const AUDIO_BITRATES = { low: 40000, standard: 64000, high: 128000 };
+
+export function bitrateOf(quality) {
+  return AUDIO_BITRATES[quality] || AUDIO_BITRATES.standard;
+}
+
 export class Recorder {
   constructor() {
     this.stream = null;
@@ -52,7 +64,7 @@ export class Recorder {
     return candidates.find((m) => MediaRecorder.isTypeSupported(m)) || '';
   }
 
-  async start() {
+  async start({ bitrate = AUDIO_BITRATES.standard } = {}) {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error('当前浏览器不支持麦克风采集');
     }
@@ -67,7 +79,8 @@ export class Recorder {
     });
 
     this.mime = Recorder.pickMime();
-    const options = { audioBitsPerSecond: 64000 };
+    const options = { audioBitsPerSecond: bitrate };
+    this.bitrate = bitrate;
     if (this.mime) options.mimeType = this.mime;
     this.rec = new MediaRecorder(this.stream, options);
     this.mime = this.rec.mimeType || this.mime || 'audio/webm';

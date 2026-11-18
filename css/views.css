@@ -1492,3 +1492,24 @@ html[data-theme="light"] .wave-badge { color: rgba(105, 62, 42, 0.75); }
 /* 录音被系统中断的说明条：复用补识别条的骨架，用黄色描边区分「这是解释，不是待办」 */
 .intr-bar { border-color: color-mix(in srgb, var(--yellow, #f5a524) 45%, transparent); }
 .intr-bar .repair-icon { color: var(--yellow, #f5a524); }
+
+/* 录音前告知的覆盖层：只认用户点下的按钮，不被弹层系统的 onClose 误判 */
+.notice-gate {
+  position: fixed; inset: 0; z-index: 70;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background: var(--bg, #101014);
+}
+.notice-card {
+  width: 100%; max-width: 420px;
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  text-align: center;
+}
+.notice-card h3 { font-size: 19px; margin: 0; }
+.notice-card p { font-size: 13.5px; line-height: 1.65; color: var(--text-2); margin: 0; }
+.notice-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 56px; height: 56px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent);
+}
+.notice-card .btn-primary, .notice-card .ghost { width: 100%; }
