@@ -1,5 +1,5 @@
 /* 听文 TingWen · 离线外壳缓存（仅缓存静态资源，不缓存录音数据） */
-const CACHE = 'tingwen-shell-v32';
+const CACHE = 'tingwen-shell-v33';
 const ASSETS = [
   './',
   './index.html',

@@ -24,6 +24,7 @@ import {
   translateRecording, TARGET_LANGS, langLabel, defaultTargetLang,
 } from '../translate.js';
 import { createSpeakerTabs } from './doc-speaker-tabs.js';
+import { toSrt, toVtt, toDocx, printDoc } from '../export.js';
 
 export function mountDoc(root, ctx, id) {
   root.innerHTML = `
@@ -685,23 +686,63 @@ export function mountDoc(root, ctx, id) {
     node.innerHTML = `
       <div class="sheet-actions">
         <button class="sheet-action" data-e="copy">${icons.copy}<span>${T('export.copyAll')}</span></button>
+        <button class="sheet-action" data-e="docx">${icons.doc}<span>${T('export.docx')}</span></button>
         <button class="sheet-action" data-e="txt">${icons.doc}<span>${T('export.txt')}</span></button>
         <button class="sheet-action" data-e="md">${icons.doc}<span>${T('export.md')}</span></button>
+        <button class="sheet-action" data-e="srt">${icons.marker}<span>${T('export.srt')}</span></button>
+        <button class="sheet-action" data-e="vtt">${icons.marker}<span>${T('export.vtt')}</span></button>
         <button class="sheet-action" data-e="json">${icons.list}<span>${T('export.json')}</span></button>
+        <button class="sheet-action" data-e="pdf">${icons.share}<span>${T('export.pdf')}</span></button>
         <button class="sheet-action" data-e="audio">${icons.download}<span>${T('export.audio')}</span></button>
-      </div>`;
+      </div>
+      <p class="hint" style="margin-top:10px">${T('export.subtitleHint')}</p>`;
     openSheet({ title: T('export.title'), desc: T('export.desc'), content: node });
     node.addEventListener('click', async (e) => {
       const k = e.target.closest('[data-e]')?.dataset.e;
       if (!k) return;
       closeSheet();
       const head = `${rec.title}\n${fmtDate(rec.startedAt)} · ${T('common.duration')} ${fmtDur(rec.durationMs)} · ${engineLabel(rec.engineMode)}\n`;
+      const meta = `${fmtDate(rec.startedAt)} · ${T('common.duration')} ${fmtDur(rec.durationMs)} · ${engineLabel(rec.engineMode)}`;
+      /* 发言人只在已确认/已编号时带上，未确认时显示临时编号，绝不冒充姓名 */
+      const nameOfId = (sid) => {
+        const owner = sid ? spk.byId.get(sid) : null;
+        return owner ? speakerName(owner) : '';
+      };
+      const labels = { points: T('export.mdPoints'), body: T('export.mdBody'), empty: T('common.none') };
       if (k === 'copy') {
         const ok = await copyText(`${head}\n${transcriptText()}`);
         toast(ok ? T('export.copied') : T('export.copyFailed'));
       } else if (k === 'txt') {
         downloadText(`${safeName(rec.title)}.txt`, `${head}\n${transcriptText()}`);
         toast(T('export.doneTxt'));
+      } else if (k === 'docx') {
+        if (!trs.length) { toast(T('doc.noTranscript')); return; }
+        const blob = await toDocx({
+          title: rec.title, meta, takeaways: analysis.takeaways, trs, nameOf: nameOfId, labels,
+        });
+        downloadBlob(`${safeName(rec.title)}.docx`, blob);
+        toast(T('export.doneDocx'));
+      } else if (k === 'srt' || k === 'vtt') {
+        if (!trs.length) { toast(T('doc.noTranscript')); return; }
+        const text = k === 'srt'
+          ? toSrt(trs, { nameOf: nameOfId })
+          : toVtt(trs, { nameOf: nameOfId, title: rec.title });
+        downloadText(
+          `${safeName(rec.title)}.${k}`,
+          text,
+          k === 'srt' ? 'application/x-subrip;charset=utf-8' : 'text/vtt;charset=utf-8',
+        );
+        toast(T(k === 'srt' ? 'export.doneSrt' : 'export.doneVtt'));
+      } else if (k === 'pdf') {
+        if (!trs.length) { toast(T('doc.noTranscript')); return; }
+        /* 安卓 WebView 的 window.print 是空操作，别让用户点了没反应 */
+        const native = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
+          && window.Capacitor.isNativePlatform());
+        if (native) { toast(T('export.printUnsupported')); return; }
+        const ok = printDoc({
+          title: rec.title, meta, takeaways: analysis.takeaways, trs, nameOf: nameOfId, labels,
+        });
+        if (!ok) toast(T('export.printUnsupported'));
       } else if (k === 'md') {
         const md = `# ${rec.title}\n\n> ${fmtDate(rec.startedAt)} · ${fmtDur(rec.durationMs)} · ${engineLabel(rec.engineMode)}\n\n## ${T('export.mdPoints')}\n\n${
           analysis.takeaways.map((t) => `- ${t.text}`).join('\n') || `- ${T('common.none')}`
