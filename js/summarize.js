@@ -22,6 +22,7 @@ import { splitSentences, analyze } from './ai.js';
 import { fmtDur } from './util.js';
 import { T } from './i18n.js';
 import { llmReady } from './correct.js';
+import { chat } from './llm.js';
 
 /* ── 线索词 ── */
 const RE = {
@@ -708,17 +709,9 @@ function mapLlmMeeting(scenario, raw, trs, speakers) {
 
 const SCENARIO_HINT = { meeting: '会议', class: '课堂 / 讲座', interview: '访谈', memo: '速记备忘' };
 
-/** DeepSeek 支持强制 JSON 输出；其他 OpenAI 兼容端点不一定认这个字段，只在认得的情况下带 */
-function jsonMode(cfg) {
-  const base = String(cfg.llmBase || '');
-  const model = String(cfg.llmModel || '');
-  return /deepseek/i.test(base) || /deepseek/i.test(model);
-}
-
 /** 调用大模型，返回与 extractSummaries 同构的结构；失败抛错，由调用方回退规则结果 */
 export async function llmSummarize({ trs, speakers, settings, scenario = 'meeting' }) {
   if (!llmReady(settings)) throw new Error(T('sum.llmUnset'));
-  const base = String(settings.llmBase).replace(/\/+$/, '');
   const lines = trs.map((t, i) => {
     const spk = speakers.find((s) => s.id === t.speakerId);
     const who = spk ? (spk.displayName || `发言人${spk.order}`) : '未识别';
@@ -740,32 +733,12 @@ ${shape},
  ]
 }`;
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 60000);
-  let res;
-  try {
-    res = await fetch(`${base}/chat/completions`, {
-      method: 'POST',
-      signal: ctrl.signal,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.llmKey}` },
-      body: JSON.stringify({
-        model: settings.llmModel || 'gpt-4o-mini',
-        temperature: 0.2,
-        ...(jsonMode(settings) ? { response_format: { type: 'json_object' } } : {}),
-        messages: [{ role: 'system', content: LLM_SYSTEM }, { role: 'user', content: user }],
-      }),
-    });
-  } catch (err) {
-    throw new Error(err?.name === 'AbortError' ? T('sum.llmTimeout') : T('sum.llmConn'));
-  } finally {
-    clearTimeout(timer);
-  }
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status}${detail ? ` · ${detail.slice(0, 140)}` : ''}`);
-  }
-  const data = await res.json().catch(() => null);
-  const content = data?.choices?.[0]?.message?.content || '';
+  /* 统一走 llm.js：模型名写错会自动换成服务端认的，报错也翻成一句人话 */
+  const { content } = await chat({
+    settings,
+    temperature: 0.2,
+    messages: [{ role: 'system', content: LLM_SYSTEM }, { role: 'user', content: user }],
+  });
   const jsonText = content.replace(/^[\s\S]*?```(?:json)?/i, '').replace(/```[\s\S]*$/, '').trim() || content.trim();
   let parsed;
   try {

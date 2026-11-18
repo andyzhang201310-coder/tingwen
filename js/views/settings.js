@@ -5,6 +5,7 @@ import {
   setSettings, listRecordings, db, purgeRecording, purgeSpeakerData, storageInfo, DEFAULT_SETTINGS,
 } from '../store.js';
 import { builtinCount, parseDict, llmReady, llmCorrect } from '../correct.js';
+import { listModels, normalizeModel } from '../llm.js';
 import { T, locale } from '../i18n.js';
 import { ASR_PROVIDERS, providerById } from '../asr-providers.js';
 
@@ -577,7 +578,10 @@ export function mountSettings(root, ctx) {
       <label class="set-field"><span>${T('set.llmBase')}</span>
         <input class="dict-input" id="llmBase" placeholder="https://api.deepseek.com/v1" value="${esc(s.llmBase || '')}" /></label>
       <label class="set-field"><span>${T('set.llmModel')}</span>
-        <input class="dict-input" id="llmModel" placeholder="deepseek-chat" value="${esc(s.llmModel || '')}" /></label>
+        <input class="dict-input" id="llmModel" list="llmModelList" placeholder="deepseek-chat" value="${esc(s.llmModel || '')}" /></label>
+      <datalist id="llmModelList"></datalist>
+      <div class="hint" style="margin-top:-2px">${T('llm.modelHint')}</div>
+      <button class="ghost outline sm" id="llmModels" style="margin-top:8px">${T('llm.modelsBtn')}</button>
       <label class="set-field"><span>${T('set.llmKey')}</span>
         <input class="dict-input" id="llmKey" type="password" placeholder="sk-…" value="${esc(s.llmKey || '')}" /></label>
       <div class="hint">${T('set.llmHint')}</div>
@@ -588,7 +592,8 @@ export function mountSettings(root, ctx) {
     const close = openSheet({ title: T('set.llm'), content: box });
     const collect = () => ({
       llmBase: $('#llmBase', box).value.trim(),
-      llmModel: $('#llmModel', box).value.trim() || 'deepseek-chat',
+      /* 手填的往往是展示名（DeepSeek-V4.1-Flash），先归一到接口 ID */
+      llmModel: normalizeModel($('#llmModel', box).value) || 'deepseek-chat',
       llmKey: $('#llmKey', box).value.trim(),
     });
     box.querySelectorAll('[data-preset]').forEach((btn) => {
@@ -598,6 +603,28 @@ export function mountSettings(root, ctx) {
         $('#llmModel', box).value = ds ? 'deepseek-chat' : 'gpt-4o-mini';
         box.querySelectorAll('[data-preset]').forEach((b) => b.classList.toggle('active', b === btn));
       });
+    });
+    /* 直接问接口要模型列表，省得用户照着展示名瞎猜 */
+    $('#llmModels', box).addEventListener('click', async () => {
+      const btn = $('#llmModels', box);
+      const cfg = collect();
+      if (!llmReady(cfg)) { toast(T('set.llmNeedConfig')); return; }
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = T('set.testing');
+      try {
+        const ids = await listModels(cfg);
+        $('#llmModelList', box).innerHTML = ids.map((id) => `<option value="${esc(id)}"></option>`).join('');
+        const cur = $('#llmModel', box).value.trim();
+        const fixed = normalizeModel(cur);
+        if (!ids.includes(cur)) $('#llmModel', box).value = ids.includes(fixed) ? fixed : ids[0];
+        toast(T('llm.modelsDone', { n: ids.length }));
+      } catch (err) {
+        toast(err?.message || T('llm.fail'));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = old;
+      }
     });
     $('#llmSave', box).addEventListener('click', async () => {
       ctx.settings = await setSettings(collect());

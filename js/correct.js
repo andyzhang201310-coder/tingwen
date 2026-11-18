@@ -12,6 +12,8 @@
  * 之所以把 3/4 设为“建议”而不是直接改：同音词很多是合法词（事实/实施、权力/权利），
  * 纯统计和大模型都会误判，交给人一眼确认成本更低，也不会把对的改错。
  */
+
+import { chat } from './llm.js';
 import { esc } from './util.js';
 import { PY_GROUPS } from './pinyin-data.js';
 
@@ -418,43 +420,21 @@ const LLM_SYSTEM = `你是中文语音识别（ASR）文本纠错器。只修正
  */
 export async function llmCorrect(lines = [], cfg = {}) {
   if (!llmReady(cfg)) throw new Error('未配置大模型纠错服务');
-  const base = String(cfg.llmBase).replace(/\/+$/, '');
   const user = `逐行检查下面的 ASR 文本。返回 JSON：{"lines":[{"i":行号,"edits":[{"from":"原文片段","to":"修正后","why":"简短理由"}]}]}。
 规则：from 必须是该行中连续出现的原文子串；只返回有改动的行；没有改动返回 {"lines":[]}。
 
 ${lines.map((t, i) => `${i}. ${t}`).join('\n')}`;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 45000);
-  let res;
-  try {
-    res = await fetch(`${base}/chat/completions`, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${cfg.llmKey}`,
-      },
-      body: JSON.stringify({
-        model: cfg.llmModel || 'gpt-4o-mini',
-        temperature: 0,
-        messages: [
-          { role: 'system', content: LLM_SYSTEM },
-          { role: 'user', content: user },
-        ],
-      }),
-    });
-  } catch (err) {
-    throw new Error(err?.name === 'AbortError' ? '大模型请求超时' : '无法连接大模型接口');
-  } finally {
-    clearTimeout(timer);
-  }
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`接口返回 ${res.status}${detail ? ` · ${detail.slice(0, 120)}` : ''}`);
-  }
-  const data = await res.json().catch(() => null);
-  const content = data?.choices?.[0]?.message?.content || '';
+  /* 统一走 llm.js：模型名写错会自动换成服务端认的，401/429 也翻成人话 */
+  const { content } = await chat({
+    settings: cfg,
+    temperature: 0,
+    timeout: 45000,
+    messages: [
+      { role: 'system', content: LLM_SYSTEM },
+      { role: 'user', content: user },
+    ],
+  });
   const jsonText = content.replace(/^[\s\S]*?```(?:json)?/i, '').replace(/```[\s\S]*$/, '').trim() || content.trim();
   let parsed;
   try {

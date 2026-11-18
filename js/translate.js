@@ -10,6 +10,7 @@
 
 import { listTranscripts, getTranslationMap, putTranslation } from './store.js';
 import { llmReady } from './correct.js';
+import { chat } from './llm.js';
 import { T } from './i18n.js';
 
 export const TARGET_LANGS = [
@@ -41,10 +42,6 @@ const BATCH = 30;
 const SYSTEM = `你是专业翻译。把每一行转录译成目标语言，只输出 JSON。
 要求：逐行一一对应，不合并、不拆分、不省略、不解释；数字、人名、术语照原样保留；保留说话人口语风格。`;
 
-function headers(settings) {
-  return { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.llmKey}` };
-}
-
 function parseJson(text) {
   const body = String(text || '');
   const fenced = body.replace(/^[\s\S]*?```(?:json)?/i, '').replace(/```[\s\S]*$/, '').trim();
@@ -66,41 +63,18 @@ function parseJson(text) {
 
 /** 一批：返回 Map(transcriptId → 译文) */
 async function translateBatch(batch, lang, settings) {
-  const base = String(settings.llmBase).replace(/\/+$/, '');
   const name = LANG_NAME[lang] || lang;
   const user = `目标语言：${name}。共 ${batch.length} 行，行号从 0 开始：
 ${batch.map((t, i) => `${i}. ${t.text}`).join('\n')}
 
 输出 JSON：{"lines":[{"i":行号,"t":"译文"}]}`;
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 60000);
-  const jsonStrict = /deepseek/i.test(String(settings.llmBase || '')) || /deepseek/i.test(String(settings.llmModel || ''));
-  let res;
-  try {
-    res = await fetch(`${base}/chat/completions`, {
-      method: 'POST',
-      signal: ctrl.signal,
-      headers: headers(settings),
-      body: JSON.stringify({
-        model: settings.llmModel || 'gpt-4o-mini',
-        temperature: 0.2,
-        ...(jsonStrict ? { response_format: { type: 'json_object' } } : {}),
-        messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: user }],
-      }),
-    });
-  } catch (err) {
-    throw new Error(err?.name === 'AbortError' ? T('tr.timeout') : T('tr.conn'));
-  } finally {
-    clearTimeout(timer);
-  }
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status}${detail ? ` · ${detail.slice(0, 140)}` : ''}`);
-  }
-
-  const data = await res.json().catch(() => null);
-  const content = data?.choices?.[0]?.message?.content || '';
+  /* 统一走 llm.js：模型名自愈 + 错误翻译 */
+  const { content } = await chat({
+    settings,
+    temperature: 0.2,
+    messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: user }],
+  });
   const parsed = parseJson(content);
   const rows = Array.isArray(parsed) ? parsed : (parsed.lines || parsed.translations || []);
 
