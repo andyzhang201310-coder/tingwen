@@ -70,7 +70,19 @@ Content-Type: multipart/form-data
       { "segments": [{ "startMs": 0, "endMs": 3200, "text": "..." }] }
 ```
 
-**可直接用的服务**：硅基流动（`https://api.siliconflow.cn/v1/audio/transcriptions`，模型 `FunAudioLLM/SenseVoiceSmall`，国内直连、价格页当前标免费、需实名认证）已端到端验证可用，中文识别质量好。SenseVoice 一类模型会把情感/事件标签拼进文本（如末尾 `😊`、`<|happy|>`），落库前由 `cleanCloudText()` 统一清掉。OpenAI 官方 `whisper-1` / `gpt-4o-transcribe` 将于 2027-02-26 下线，新配置建议用 `gpt-transcribe` 或硅基流动。
+**三家云端服务商，设置页随时切换**：设置 → 通用 → 云端识别接口，顶部可切换「硅基流动 / 阿里百炼 / 自定义」。每家独立保存地址、Key、模型，切换不丢配置；切换后立即生效（当前生效的是选中的那家）。旧版只存一套地址/Key 的配置会按 URL 自动归类到对应服务商，不会丢失。
+
+| 服务商 | 接口协议 | 默认地址 / 模型 |
+|---|---|---|
+| 硅基流动 | `/audio/transcriptions`（multipart） | `https://api.siliconflow.cn/v1/audio/transcriptions` · `FunAudioLLM/SenseVoiceSmall` |
+| 阿里百炼 | `/chat/completions`（JSON + base64 Data URL） | `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions` · `qwen3-asr-flash` |
+| 自定义 | `/audio/transcriptions`（multipart） | 自建或任何 OpenAI 兼容接口 |
+
+两家协议不同，由 `js/asr-providers.js` 标记、`js/repair.js` 按协议分流：百炼把 WAV 转 `data:audio/wav;base64` 放进 `input_audio`，从 `choices[0].message.content` 取文字；硅基流动与自定义走原来的 multipart 上传。
+
+**可直接用的服务**：硅基流动（国内直连、价格页当前标免费、需实名认证）已用真实音频端到端验证，中文识别质量好；阿里百炼 `qwen3-asr-flash` 中文更准、每月送 10 小时，也已用 mock 验证完整调用链（需你自己在百炼控制台开通并填 Key）。SenseVoice 一类模型会把情感/事件标签拼进文本（如末尾 `😊`、`<|happy|>`），落库前由 `cleanCloudText()` 统一清掉。OpenAI 官方 `whisper-1` / `gpt-4o-transcribe` 将于 2027-02-26 下线，新配置建议用 `gpt-transcribe` 或上面两家。
+
+**注意**：这三家都是"文件转写"，只能补识别，**不能做实时字幕**。实时出字仍走浏览器 Web Speech API；云端实时需要换流式 ASR（如百炼 `fun-asr-realtime` 的 WebSocket 接口），当前未接入。
 
 **已知边界**：MediaRecorder 的分段只有第一段带容器头，中间段无法单独解码，所以补识别会把整段音频解码一次再切片——超过 20 分钟不自动执行（16 kHz Float32 约 3.84 MB/分钟），只标注原因。要支持超长录音，得换成分段可独立解码的容器（如原生版的 m4a 分段）。
 

@@ -1432,3 +1432,21 @@ html[data-theme="light"] .wave-badge { color: rgba(105, 62, 42, 0.75); }
 
 .tr-bar .filter-chip { display: inline-flex; align-items: center; gap: 6px; }
 .tr-bar .filter-chip svg { width: 14px; height: 14px; }
+
+.asr-prov-tabs { display: flex; gap: 8px; margin: 14px 0 4px; }
+.asr-prov-tab {
+  flex: 1 1 0; min-width: 0; height: 38px;
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: 13px; font-weight: 550;
+  transition: background 0.18s, color 0.18s, border-color 0.18s;
+}
+.asr-prov-tab.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  font-weight: 650;
+}
+.asr-prov-tab:active { transform: scale(0.98); }

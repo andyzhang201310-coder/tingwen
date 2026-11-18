@@ -6,6 +6,7 @@ import {
 } from '../store.js';
 import { builtinCount, parseDict, llmReady, llmCorrect } from '../correct.js';
 import { T, locale } from '../i18n.js';
+import { ASR_PROVIDERS, providerById } from '../asr-providers.js';
 
 const UI_LANGS = () => [
   { label: T('set.langZh'), value: 'zh-CN' },
@@ -121,7 +122,7 @@ export function mountSettings(root, ctx) {
         ${row({
           icon: 'cloud',
           label: T('set.asrCloud'),
-          value: s.asrCloudUrl ? T('set.configured') : T('set.notConfigured'),
+          value: `${T(providerById(s.asrProvider).labelKey)} · ${s.asrCloudUrl ? T('set.configured') : T('set.notConfigured')}`,
           act: 'asr-cloud',
         })}
       </div>
@@ -361,40 +362,74 @@ export function mountSettings(root, ctx) {
   }
 
   function openAsrCloud() {
+    const providers = JSON.parse(JSON.stringify(s.asrProviders || {}));
+    let active = s.asrProvider || 'siliconflow';
+    let auto = s.repairAuto !== false;
     const box = document.createElement('div');
     box.innerHTML = `
       <p class="sheet-desc">${T('set.asrCloudHint')}</p>
-      <label class="set-field"><span>${T('set.asrCloudUrl')}</span>
-        <input class="dict-input" id="acUrl" placeholder="https://api.openai.com/v1/audio/transcriptions" value="${esc(s.asrCloudUrl || '')}" /></label>
-      <label class="set-field"><span>${T('set.asrCloudKey')}</span>
-        <input class="dict-input" id="acKey" type="password" placeholder="••••" value="${esc(s.asrCloudKey || '')}" /></label>
-      <label class="set-field"><span>${T('set.asrCloudModel')}</span>
-        <input class="dict-input" id="acModel" placeholder="whisper-1" value="${esc(s.asrCloudModel || 'whisper-1')}" /></label>
+      <div class="asr-prov-tabs" role="tablist">
+        ${ASR_PROVIDERS.map((p) => `<button type="button" class="asr-prov-tab" data-prov="${p.id}" role="tab">${T(p.labelKey)}</button>`).join('')}
+      </div>
+      <div id="acFields"></div>
+      <p class="hint" id="acHint" style="margin-top:10px"></p>
       ${toggle({
         icon: 'restore',
         label: T('set.repairAuto'),
         key: 'repairAuto',
-        sub: s.repairAuto === false ? '' : T('set.repairAutoSub'),
+        sub: auto ? T('set.repairAutoSub') : '',
       })}
       <p class="hint">${T('set.asrCloudWarn')}</p>
       <button class="btn-primary" id="acSave" style="margin-top:14px">${T('common.save')}</button>`;
     const close = openSheet({ title: T('set.asrCloud'), content: box });
+
+    /* 切走之前先把当前输入存回 draft，避免切换丢掉正在填的内容 */
+    function stash() {
+      const url = $('#acUrl', box), key = $('#acKey', box), model = $('#acModel', box);
+      if (!url) return;
+      providers[active] = {
+        ...(providers[active] || {}),
+        url: url.value.trim(), key: key.value.trim(), model: model.value.trim(),
+      };
+    }
+    function paint() {
+      const p = providerById(active);
+      const cur = providers[active] || {};
+      box.querySelectorAll('.asr-prov-tab').forEach((b) => {
+        const on = b.dataset.prov === active;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', String(on));
+      });
+      $('#acFields', box).innerHTML = `
+        <label class="set-field"><span>${T('set.asrCloudUrl')}</span>
+          <input class="dict-input" id="acUrl" placeholder="${esc(p.url || 'https://…')}" value="${esc(cur.url || '')}" /></label>
+        <label class="set-field"><span>${T('set.asrCloudKey')}</span>
+          <input class="dict-input" id="acKey" type="password" placeholder="••••" value="${esc(cur.key || '')}" /></label>
+        <label class="set-field"><span>${T('set.asrCloudModel')}</span>
+          <input class="dict-input" id="acModel" placeholder="${esc(p.model)}" value="${esc(cur.model || p.model)}" /></label>`;
+      $('#acHint', box).textContent = T(p.hintKey);
+    }
+    paint();
+
     box.addEventListener('click', (e) => {
+      const tab = e.target.closest('.asr-prov-tab');
+      if (tab) {
+        stash();
+        active = tab.dataset.prov;
+        paint();
+        return;
+      }
       const sw = e.target.closest('.switch');
       if (!sw) return;
-      const on = sw.getAttribute('aria-checked') !== 'true';
-      sw.setAttribute('aria-checked', String(on));
-      s.repairAuto = on;
+      auto = sw.getAttribute('aria-checked') !== 'true';
+      sw.setAttribute('aria-checked', String(auto));
       const hintEl = $('.set-sub', box);
-      if (hintEl) hintEl.style.display = on ? '' : 'none';
+      if (hintEl) hintEl.style.display = auto ? '' : 'none';
     });
+
     $('#acSave', box).addEventListener('click', async () => {
-      ctx.settings = await setSettings({
-        asrCloudUrl: $('#acUrl', box).value.trim(),
-        asrCloudKey: $('#acKey', box).value.trim(),
-        asrCloudModel: $('#acModel', box).value.trim() || 'whisper-1',
-        repairAuto: s.repairAuto !== false,
-      });
+      stash();
+      ctx.settings = await setSettings({ asrProvider: active, asrProviders: providers, repairAuto: auto });
       close();
       await render();
       toast(T('set.asrCloudSaved'));

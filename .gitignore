@@ -30,4 +30,5 @@ www/
 android/.gradle/
 android/build/
 android/app/build/
-dist/*.apk          # 构建产物，4MB+ 不适合进 git；用 npm run android:build 重建
+# 构建产物，4MB+ 不适合进 git；用 npm run android:build 重建
+dist/*.apk

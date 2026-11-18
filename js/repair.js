@@ -17,6 +17,7 @@ import {
 } from './store.js';
 import { decodeMono } from './diarize.js';
 import { T } from './i18n.js';
+import { getActiveAsrProvider } from './asr-providers.js';
 
 /** 超过这个长度不自动解码补识别（16 kHz 单声道 Float32 约 3.84 MB/分钟） */
 export const REPAIR_MAX_MS = 20 * 60 * 1000;
@@ -111,7 +112,7 @@ export async function pendingSummary(recordingId) {
 }
 
 export function canRepair(settings) {
-  return !!(settings?.asrCloudUrl || '').trim();
+  return getActiveAsrProvider(settings).configured;
 }
 
 /* ───────── 音频切片与 WAV 编码 ───────── */
@@ -167,7 +168,18 @@ function cleanCloudText(s = '') {
     .trim();
 }
 
-async function postClip({ url, key, model, lang, blob, startMs, endMs }) {
+/** Blob → base64（分块拼字符串，避免大音频一次 spread 爆栈） */
+async function blobToBase64(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = '';
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CH));
+  }
+  return btoa(bin);
+}
+
+async function postMultipart({ url, key, model, lang, blob, startMs, endMs }) {
   const form = new FormData();
   form.append('file', blob, `clip-${startMs}-${endMs}.wav`);
   form.append('model', model || 'whisper-1');
@@ -191,6 +203,39 @@ async function postClip({ url, key, model, lang, blob, startMs, endMs }) {
   }
   const text = cleanCloudText(data.text || data.transcription);
   return text ? [{ text, startMs, endMs }] : [];
+}
+
+/** 阿里百炼 Qwen-ASR：POST chat/completions，音频以 data:audio/wav;base64 放进 input_audio */
+async function postChatAudio({ url, key, model, blob, startMs, endMs }) {
+  const b64 = await blobToBase64(blob);
+  const body = {
+    model: model || 'qwen3-asr-flash',
+    messages: [{
+      role: 'user',
+      content: [{ type: 'input_audio', input_audio: { data: `data:audio/wav;base64,${b64}` } }],
+    }],
+    stream: false,
+  };
+  const headers = { 'Content-Type': 'application/json' };
+  if (key) headers.Authorization = `Bearer ${key}`;
+  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    const err = new Error(`HTTP ${res.status}${detail ? ` · ${detail.slice(0, 120)}` : ''}`);
+    err.status = res.status;
+    throw err;
+  }
+  const data = await res.json().catch(() => null);
+  if (!data) throw new Error('响应不是 JSON');
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error).slice(0, 120));
+  const content = data.choices?.[0]?.message?.content;
+  const text = cleanCloudText(typeof content === 'string' ? content : Array.isArray(content) ? content.map((c) => c.text || '').join('') : '');
+  return text ? [{ text, startMs, endMs }] : [];
+}
+
+export async function postClip(args) {
+  if (args.protocol === 'chat-audio') return postChatAudio(args);
+  return postMultipart(args);
 }
 
 /* ───────── 执行补识别 ───────── */
@@ -241,15 +286,17 @@ export async function runRepair(recordingId, { settings, onProgress } = {}) {
         continue;
       }
       const wav = encodeWav(pcm, decoded.sampleRate);
-      const parts = await postClip({
-        url: settings.asrCloudUrl.trim(),
-        key: settings.asrCloudKey,
-        model: settings.asrCloudModel,
-        lang: settings.lang,
-        blob: wav,
-        startMs: job.startMs,
-        endMs: job.endMs,
-      });
+  const provider = getActiveAsrProvider(settings);
+  const parts = await postClip({
+    protocol: provider.protocol,
+    url: provider.url,
+    key: provider.key,
+    model: provider.model,
+    lang: settings.lang,
+    blob: wav,
+    startMs: job.startMs,
+    endMs: job.endMs,
+  });
       const ids = [];
       for (const p of parts) {
         const row = await addTranscript({

@@ -1,4 +1,5 @@
 import { uid, sha256Short } from './util.js';
+import { normalizeAsrSettings, emptyProvider } from './asr-providers.js';
 
 /* 产品名从「语记」改为「听文 TingWen」，库名同步更换；
    旧库 yuji_db 里的录音会在首次打开时自动迁移过来，不丢数据。 */
@@ -46,7 +47,13 @@ export const DEFAULT_SETTINGS = {
   diarCloudUrl: '',           // 云端分离接口（POST，返回统一结果结构）
   diarCloudKey: '',
   /* 补识别（断网恢复后对已录音频重跑识别） */
-  asrCloudUrl: '',            // OpenAI 兼容的 /audio/transcriptions 或自建接口
+  asrProvider: 'siliconflow',  // siliconflow | bailian | custom（当前生效的云端服务商）
+  asrProviders: {              // 每家独立保存地址/密钥/模型，切换不丢配置
+    siliconflow: emptyProvider('siliconflow'),
+    bailian: emptyProvider('bailian'),
+    custom: emptyProvider('custom'),
+  },
+  asrCloudUrl: '',            // 当前服务商的地址（同步字段，勿直接改）
   asrCloudKey: '',
   asrCloudModel: 'whisper-1',
   repairAuto: true,           // 网络恢复后自动补识别（需已配置云端识别接口）
@@ -779,14 +786,24 @@ export async function clearAsrJobs(recordingId, { keepOpen = true } = {}) {
 
 export async function getSettings() {
   const row = await db.get('meta', 'settings');
-  return { ...DEFAULT_SETTINGS, ...(row?.value || {}) };
+  return normalizeAsrSettings({ ...DEFAULT_SETTINGS, ...(row?.value || {}) });
 }
 
 export async function setSettings(patch) {
   const cur = await getSettings();
   const next = { ...cur, ...patch };
-  await db.put('meta', { key: 'settings', value: next });
-  return next;
+  /* 兼容旧调用方：只传 asrCloud* 三个字段时，视为改当前服务商，而不是覆盖整组配置 */
+  if (!patch || !Object.prototype.hasOwnProperty.call(patch, 'asrProviders')) {
+    const id = next.asrProvider;
+    const cfg = { ...(next.asrProviders?.[id] || emptyProvider(id)) };
+    if (patch && Object.prototype.hasOwnProperty.call(patch, 'asrCloudUrl')) cfg.url = next.asrCloudUrl;
+    if (patch && Object.prototype.hasOwnProperty.call(patch, 'asrCloudKey')) cfg.key = next.asrCloudKey;
+    if (patch && Object.prototype.hasOwnProperty.call(patch, 'asrCloudModel')) cfg.model = next.asrCloudModel;
+    next.asrProviders = { ...next.asrProviders, [id]: cfg };
+  }
+  const normalized = normalizeAsrSettings(next);
+  await db.put('meta', { key: 'settings', value: normalized });
+  return normalized;
 }
 
 /* ───────── 容量 ───────── */
