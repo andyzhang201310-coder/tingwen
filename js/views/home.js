@@ -186,8 +186,17 @@ export function mountHome(root, ctx) {
       toast(T('home.noAudio'));
       return;
     }
-    if (playingId === id && ctx.player.playing) {
-      ctx.player.pause();
+    /* 同一条录音：暂停和继续都在原地。原来这里无条件 load + seek(0)，
+       于是「暂停一下再点播放」每次都从头开始；只有播完（ended）或换一条才回到 0。 */
+    if (ctx.player.isLoaded(id)) {
+      if (ctx.player.playing) {
+        ctx.player.pause();
+        return;
+      }
+      if (ctx.player.ended) ctx.player.seek(0);
+      playingId = id;
+      ctx.player.play();
+      render();
       return;
     }
     ctx.player.load(rec.audio, rec.id);

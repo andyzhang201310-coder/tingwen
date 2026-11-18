@@ -1501,6 +1501,8 @@ export function mountDoc(root, ctx, id) {
          一 load 就把 currentTime 清零——表现出来就是点暂停又回到开头。 */
       if (!ctx.player.isLoaded(rec.id)) ctx.player.load(rec.audio, rec.id);
       ctx.currentDocId = id;
+      /* 播完了再点播放才从头；暂停中续播保持原位。 */
+      if (ctx.player.ended) { ctx.player.seek(0); ctx.player.play(); return; }
       ctx.player.toggle();
       return;
     }

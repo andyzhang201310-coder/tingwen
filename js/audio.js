@@ -369,7 +369,13 @@ export class Player {
       this.emit('time');
     });
     this.audio.addEventListener('play', () => this.emit('state'));
-    this.audio.addEventListener('pause', () => this.emit('state'));
+    this.audio.addEventListener('pause', () => {
+      /* 暂停瞬间把位置钉死：timeupdate 大约 250ms 才来一次，只靠它记位置
+         在「刚播就暂停」时记到的是 0，续播就会被当成从头开始。 */
+      const t = this.audio.currentTime;
+      if (t > 0.05 && !this.audio.ended) this.lastPos = t * 1000;
+      this.emit('state');
+    });
     this.audio.addEventListener('ended', () => {
       this.lastPos = 0;   // 播完再点播放应当从头开始，别让位置守卫把尾巴续上
       this.emit('state');
@@ -411,12 +417,13 @@ export class Player {
     return Number.isFinite(d) ? d * 1000 : 0;
   }
   get playing() { return !this.audio.paused && !this.audio.ended; }
+  get ended() { return this.audio.ended; }
 
   async play() {
     /* 兜底：极少数情况下（重新装载音频源、浏览器回收媒体流水线）currentTime 会悄悄回到 0，
-       这时 continue 就变成了「从头播」。用户主动拖动进度条会走 seek() 同步 lastPos，
-       所以这里只在上次位置明显靠后、且播放器又真的停在 0 附近时接管。 */
-    if (this.lastPos > 1200 && this.audio.currentTime < 0.35 && !this.audio.ended) {
+       这时 continue 就变成了「从头播」。有意拖动进度会走 seek() 同步 lastPos，
+       所以这里只在上次位置明显不为零、且播放器又真的停在 0 附近时接管。 */
+    if (this.lastPos > 200 && this.audio.currentTime < 0.35 && !this.audio.ended) {
       try { this.audio.currentTime = this.lastPos / 1000; } catch { /* ignore */ }
     }
     try { await this.audio.play(); } catch (e) { console.warn(e); }
