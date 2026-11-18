@@ -26,6 +26,12 @@
 
         </activity>
 
+        <!-- 录音期前台服务：切后台/锁屏时保住进程，让分段回调继续落盘（文档 5.3） -->
+        <service
+            android:name=".RecordingService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

@@ -15,6 +15,7 @@ import { correctText, optionsFromSettings, renderTextWithFixes } from '../correc
 import { LiveSpeakerTracker } from '../live-speaker.js';
 import { runDiarization } from '../speakers.js';
 import { mergeRanges, collectGaps, enqueueGaps } from '../repair.js';
+import { startKeepAlive, updateKeepAlive, stopKeepAlive, onKeepAliveStop, isKeepAliveSupported } from '../keepalive.js';
 
 /** folder 用作数据键（写入录音元数据），显示时再按当前语言取名 */
 const SCENES = ['会议', '课堂', '访谈', '备忘'];
@@ -108,8 +109,17 @@ export function mountRecord(root, ctx) {
   /* 识别中断窗口：断网 / 引擎异常期间录到的音频没有任何转录，记下来供补识别 */
   let downWindows = [];
   let openDown = null;
+  /* 通知栏「停止录音」的取消订阅函数；页面离开时必须清掉，否则回到录音页会重复绑定 */
+  let keepStopOff = null;
+  let keepAliveOn = false;
 
   /* ── 界面更新 ── */
+  /** 通知栏文案用的 mm:ss */
+  const mss = (ms) => {
+    const t = Math.max(0, Math.round(ms));
+    return `${String(Math.floor(t / 60000)).padStart(2, '0')}:${String(Math.floor((t % 60000) / 1000)).padStart(2, '0')}`;
+  };
+
   function winInfo() {
     const t = Math.max(recorder.elapsed, 0);
     const win = Math.max(6000, Math.min(14000, t / 0.72 || 6000));
@@ -487,12 +497,40 @@ export function mountRecord(root, ctx) {
           size: recorder.segments.reduce((s, x) => s + x.blob.size, 0),
         });
       } catch { /* 忽略 */ }
+      /* 通知栏同步时长与已落盘段数：锁屏时用户看不到界面，只能看通知 */
+      if (keepAliveOn) {
+        updateKeepAlive({
+          title: rec.title,
+          text: T('rec.keepAliveText', { time: mss(recorder.elapsed), n: recorder.segments.length }),
+        });
+      }
       paintStatus();
       paintAsrHint();
     }, 4000);
 
     if ('wakeLock' in navigator) {
       try { wakeLock = await navigator.wakeLock.request('screen'); } catch { /* 忽略 */ }
+    }
+
+    /* 前台服务：锁屏 / 切后台时把进程钉在前台优先级，30 秒分段的落盘回调才不会被冻住。
+       网页端没有这个插件，startKeepAlive 直接返回 unsupported，录音不受影响。 */
+    const ka = await startKeepAlive({
+      title: rec?.title || T('rec.keepAliveTitle'),
+      text: T('rec.keepAliveText', { time: mss(0), n: 0 }),
+    }).catch(() => ({ running: false }));
+    keepAliveOn = ka?.running === true;
+    if (keepAliveOn) {
+      /* 服务起来了但通知被系统隐藏时，锁屏后就没有「停止录音」入口，
+         必须明说，否则用户只能等录音自己结束 */
+      if (ka.notif === false) toast(T('rec.notifOff'));
+      keepStopOff = onKeepAliveStop(() => {
+        /* 通知栏点「停止录音」→ 走与「完成」完全相同的收尾，
+           保证分段校验、尾句补存、缺口入队都执行到 */
+        if (!finished) finish();
+      });
+    } else if (isKeepAliveSupported()) {
+      /* 插件在但服务没起来：录音仍可进行，只是锁屏后可能被系统冻结 */
+      toast(T('rec.bgOff'));
     }
     updateRuler();
   }
@@ -550,6 +588,11 @@ export function mountRecord(root, ctx) {
     try { await flushInterim(); } catch { /* 忽略 */ }
     asr?.destroy();
     try { await wakeLock?.release(); } catch { /* 忽略 */ }
+    /* 音频已停、分段已合并成 blob，剩下的只是写库，这时才撤前台服务 */
+    await stopKeepAlive();
+    keepStopOff?.();
+    keepStopOff = null;
+    keepAliveOn = false;
     if (!rec) { ctx.navigate('#/', { replace: true }); return; }
 
     const duration = result?.durationMs || Math.round(recorder.elapsed);
@@ -656,6 +699,10 @@ export function mountRecord(root, ctx) {
     asr?.destroy();
     recorder.abort();
     try { await wakeLock?.release(); } catch { /* 忽略 */ }
+    await stopKeepAlive();
+    keepStopOff?.();
+    keepStopOff = null;
+    keepAliveOn = false;
     if (rec) await purgeRecording(rec.id);
     ctx.navigate('#/', { replace: true });
   }
@@ -764,9 +811,14 @@ export function mountRecord(root, ctx) {
       window.removeEventListener('beforeunload', beforeUnload);
       window.removeEventListener('online', onNet);
       window.removeEventListener('offline', onNet);
+      keepStopOff?.();
+      keepStopOff = null;
       if (!finished) {
         // 路由离开（浏览器后退等）：自动结束并保存，避免丢音频
         finish({ goto: 'none', silent: true });
-      }    },
+      }
+      /* finish 里已停过服务；这里再兜一次，防止 finish 因异常提前返回后通知一直挂着 */
+      stopKeepAlive();
+    },
   };
 }

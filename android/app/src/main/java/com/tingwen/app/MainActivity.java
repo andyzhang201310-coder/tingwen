@@ -4,6 +4,7 @@ import android.os.Bundle;
 
 import com.getcapacitor.BridgeActivity;
 import com.tingwen.app.plugins.BailianAsrPlugin;
+import com.tingwen.app.plugins.RecordingKeepAlivePlugin;
 
 public class MainActivity extends BridgeActivity {
     @Override
@@ -13,6 +14,7 @@ public class MainActivity extends BridgeActivity {
            日志级别改由 capacitor.config.json 的 loggingBehavior=none 控制。 */
         // 在 super.onCreate 之前注册原生插件（Capacitor 官方要求）
         registerPlugin(BailianAsrPlugin.class);
+        registerPlugin(RecordingKeepAlivePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
