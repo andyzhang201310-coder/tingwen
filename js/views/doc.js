@@ -8,6 +8,7 @@ import {
   getRecording, updateRecording, listTranscripts, updateTranscript,
   addTranscript, deleteTranscript, softDeleteRecording, purgeRecording, setSettings,
   getTranslationMap, translationLangs, clearTranslations,
+  clearSegments, clearTranscripts, clearSummaries,
 } from '../store.js';
 import { analyze } from '../ai.js';
 import { statusOf, engineLabel, folderLabel, intrReasonText } from '../model.js';
@@ -1141,6 +1142,43 @@ export function mountDoc(root, ctx, id) {
     });
   }
 
+  /* ── 独立删除（产品文档 5.4 第 6 条：录音、文字、云端数据可分别删除） ──
+     整条删除回收站已经支持，这里补的是「只删其中一样」：
+     访谈常要留声不留字（文字涉密），课程笔记反过来要留字不留声（省空间）。 */
+  async function deleteAudioOnly() {
+    const ok = await confirmDialog({
+      title: T('doc.delAudioTitle'),
+      message: T('doc.delAudioMsg'),
+      confirmText: T('doc.delAudio'),
+      danger: true,
+    });
+    if (!ok) return;
+    try { ctx.player?.pause?.(); } catch { /* 播放器可能没在播 */ }
+    await clearSegments(rec.id);
+    await updateRecording(rec.id, { audio: null, size: 0, peaks: [] });
+    rec.audio = null;
+    rec.size = 0;
+    rec.peaks = [];
+    toast(T('doc.audioDeleted'));
+    renderAll();
+  }
+
+  async function deleteTextOnly() {
+    const ok = await confirmDialog({
+      title: T('doc.delTextTitle'),
+      message: T('doc.delTextMsg'),
+      confirmText: T('doc.delText'),
+      danger: true,
+    });
+    if (!ok) return;
+    const n = await clearTranscripts(rec.id);
+    try { await clearSummaries(rec.id); } catch { /* 摘要清不掉不影响文字删除 */ }
+    await updateRecording(rec.id, { hasTranscript: false, pending: { count: 0, totalMs: 0 } });
+    toast(T('doc.textDeleted', { n }));
+    await load();
+    renderAll();
+  }
+
   /* ── 信息 / 操作 ── */
   function openInfo() {
     const st = statusOf(rec);
@@ -1172,6 +1210,8 @@ export function mountDoc(root, ctx, id) {
         <button class="sheet-action" data-a="rename">${icons.edit}<span>${T('common.rename')}</span></button>
         <button class="sheet-action" data-a="edit">${icons.edit}<span>${T('doc.editTranscript')}</span></button>
         <button class="sheet-action" data-a="speaker">${icons.waveform}<span>${T('doc.speaker')}</span></button>
+        ${(rec.audio || rec.size) ? `<button class="sheet-action danger" data-a="delAudio">${icons.trash}<span>${T('doc.delAudio')}</span></button>` : ''}
+        ${trs.length ? `<button class="sheet-action danger" data-a="delText">${icons.trash}<span>${T('doc.delText')}</span></button>` : ''}
         <button class="sheet-action danger" data-a="delete">${icons.trash}<span>${T('common.delete')}</span></button>
       </div>`;
     openSheet({ title: rec.title, content: node });
@@ -1180,6 +1220,8 @@ export function mountDoc(root, ctx, id) {
       if (!a) return;
       if (a === 'edit') { closeSheet(); startEdit(); }
       if (a === 'speaker') { closeSheet(); ctx.player.pause(); ctx.navigate(`#/speakers/${rec.id}`); return; }
+      if (a === 'delAudio') { closeSheet(); await deleteAudioOnly(); return; }
+      if (a === 'delText') { closeSheet(); await deleteTextOnly(); return; }
       if (a === 'rename') {
         closeSheet();
         const box = document.createElement('div');

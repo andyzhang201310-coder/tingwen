@@ -3,7 +3,7 @@ import { icons } from '../icons.js';
 import { toast, openSheet, confirmDialog, renderWave, timerHtml } from '../ui.js';
 import {
   createRecording, updateRecording, addSegment, clearSegments,
-  addTranscript, purgeRecording, listTranscripts, verifySegments,
+  addTranscript, purgeRecording, listTranscripts, verifySegments, setSettings,
 } from '../store.js';
 import { Recorder } from '../audio.js';
 import { createLiveASR } from '../asr-live.js';
@@ -435,6 +435,24 @@ export function mountRecord(root, ctx) {
 
   /* ── 启动 ── */
   async function boot() {
+    /* 录音前告知（说话人规范 §9「录音前展示必要的录音和参与者告知提示」）：
+       必须排在打开麦克风之前——先录再告知等于没告知。只问一次，确认后写入设置。 */
+    if (!ctx.settings.recordNoticeSeen) {
+      const agreed = await confirmDialog({
+        title: T('rec.noticeTitle'),
+        message: T('rec.noticeBody'),
+        confirmText: T('rec.noticeOk'),
+        cancelText: T('rec.noticeCancel'),
+      });
+      if (!agreed) {
+        ctx.navigate('#/', { replace: true });
+        return;
+      }
+      try {
+        ctx.settings = await setSettings({ recordNoticeSeen: true });
+      } catch { /* 存不下也不挡录音，下次再问一次而已 */ }
+    }
+
     // 先拿到麦克风，再落库，避免无权限时留下空记录
     try {
       await recorder.start();

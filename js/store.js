@@ -437,6 +437,17 @@ export async function deleteTranscript(id) {
   return db.del('transcripts', id);
 }
 
+/**
+ * 删除一条录音的全部文字，保留音频（产品文档 5.4 第 6 条
+ * 「提供录音、文字和云端数据的独立删除能力」）。
+ * 返回删除条数，便于界面说清「删了几条」而不是含糊地报「已删除」。
+ */
+export async function clearTranscripts(recordingId) {
+  const rows = await listTranscripts(recordingId);
+  await Promise.all(rows.map((t) => db.del('transcripts', t.id)));
+  return rows.length;
+}
+
 /* ───────── 说话人（会议内身份，技术规范 8.1） ───────── */
 
 export async function listSpeakers(recordingId) {
