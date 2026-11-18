@@ -71,6 +71,38 @@ export function mountSpeakers(root, ctx, recordingId) {
       </div>`;
   }
 
+  /**
+   * 录音质量：信噪比与重叠语音。
+   * 远场开会时分离结果会明显变差，但界面原本只说「已识别 N 人」——
+   * 用户不知道这份结果该信几分。这里把不可见的声学条件明说出来。
+   */
+  function qualityHtml() {
+    const q = view.quality;
+    if (!q) return '';
+    const LEVEL = {
+      clean: ['ok', 'spk.qualityClean'],
+      moderate: ['warn', 'spk.qualityModerate'],
+      noisy: ['bad', 'spk.qualityNoisy'],
+      unknown: ['mute', 'spk.qualityUnknown'],
+    };
+    const [cls, key] = LEVEL[q.level] || LEVEL.unknown;
+    const bits = [];
+    /* 信噪比低于 18 dB 时不展示：那是「片段里没有停顿、算不准」的产物，
+       和左边的「清晰」摆在一起只会让人怀疑这个判断。 */
+    if (Number.isFinite(q.snrDb) && q.snrDb >= 18) bits.push(T('spk.qualitySnr', { db: q.snrDb }));
+    if (q.overlapSpans) bits.push(T('spk.overlapSpans', { n: q.overlapSpans }));
+    if (q.lowConfSpans) bits.push(T('spk.lowConfSpans', { n: q.lowConfSpans }));
+    const advice = q.level === 'noisy'
+      ? `<p class="hint">${esc(T('spk.qualityNoisyHint'))}</p>`
+      : (q.overlapSpans ? `<p class="hint">${esc(T('spk.overlapHint'))}</p>` : '');
+    return `
+      <div class="spk-quality">
+        <span class="spk-q-badge ${cls}">${esc(T(key))}</span>
+        ${bits.length ? `<span class="spk-q-detail">${esc(bits.join(' · '))}</span>` : ''}
+      </div>
+      ${advice}`;
+  }
+
   function overviewHtml() {
     const n = view.speakers.length;
     const conflicts = view.transcripts.filter((t) => (t.speakerConfidence ?? 1) < 0.45 && t.speakerId).length;
@@ -89,6 +121,7 @@ export function mountSpeakers(root, ctx, recordingId) {
             ? view.tasks.map(taskRow).join('')
             : `<div class="diar-task"><i class="dot mute"></i><span class="diar-task-name">${T('diar.title')}</span><span class="diar-task-status">${T('diar.statusPending')}</span></div>`}
         </div>
+        ${qualityHtml()}
         <div class="spk-flags">
           ${conflicts ? `<span class="tag">${esc(T('spk.conflicts', { n: conflicts }))}</span>` : ''}
           ${view.unknownCount ? `<span class="tag">${esc(T('spk.unknownSegments', { n: view.unknownCount }))}</span>` : ''}

@@ -1450,3 +1450,41 @@ html[data-theme="light"] .wave-badge { color: rgba(105, 62, 42, 0.75); }
   font-weight: 650;
 }
 .asr-prov-tab:active { transform: scale(0.98); }
+
+/* ── 术语抽取（文稿页 → 抽取术语） ── */
+.term-list { display: flex; flex-direction: column; gap: 6px; max-height: 44vh; overflow-y: auto; margin: 10px 0; }
+.term-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 10px 12px; border-radius: 12px;
+  background: var(--surface-2); cursor: pointer;
+  border: 1px solid transparent;
+}
+.term-row.is-on { border-color: var(--accent-line); background: var(--accent-soft); }
+.term-row input { margin: 3px 0 0; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
+.term-main { flex: 1; min-width: 0; }
+.term-word { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.term-badge {
+  font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-line);
+}
+.term-meta { font-size: 12px; color: var(--text-2); margin-top: 3px; }
+.term-eg {
+  font-size: 12px; color: var(--text-3); margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── 录音质量（说话人页） ── */
+.spk-quality {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 12px; padding: 9px 12px; border-radius: 12px;
+  background: var(--surface-2);
+}
+.spk-q-badge {
+  font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: 999px;
+  background: var(--surface-3); color: var(--text-2); flex: none;
+}
+.spk-q-badge.ok { color: var(--green); background: var(--green-soft); }
+.spk-q-badge.warn { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 14%, transparent); }
+.spk-q-badge.bad { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
+.spk-q-badge.mute { color: var(--text-3); }
+.spk-q-detail { font-size: 12px; color: var(--text-2); }

@@ -196,6 +196,7 @@ function estimateF0(frame, offset, sampleRate) {
   const denom = prev - 2 * peak + next;
   const shift = Math.abs(denom) > 1e-9 ? (0.5 * (prev - next)) / denom : 0;
   const lag = pick + Math.max(-0.5, Math.min(0.5, shift));
+
   return { f0: sampleRate / lag, clarity: Math.min(1, peak) };
 }
 
@@ -240,6 +241,46 @@ function spectralStatsOf(sampleRate) {
     b2,
     b3,
   };
+}
+
+/**
+ * 一帧里是否同时有两个人在说。
+ *
+ * 判据在频域而不是自相关：两个等强度的声源叠加时，自相关会给出两者的折中周期
+ * （实测 120 Hz + 210 Hz 被判成 108 Hz），次峰根本立不起来；而频谱上两条谐波梳
+ * 是分开的，直接找「第二个可用作基频的峰」更可靠。
+ *
+ * 边界：分辨率 15.6 Hz（1024 点 @16 kHz），基频差小于约 25 Hz 的两个人分不开；
+ * 同性别、音高极接近的重叠会漏检——所以这个标记只做提示，不改任何归属。
+ */
+function overlapFromSpectrum(sampleRate) {
+  const binHz = sampleRate / F0_N;
+  const lo = Math.max(2, Math.floor(70 / binHz));
+  const hi = Math.min(F0_N / 2 - 2, Math.ceil(360 / binHz));
+  if (hi - lo < 6) return false;
+
+  const peaks = [];
+  for (let k = lo; k <= hi; k += 1) {
+    const m = Math.hypot(reSpec[k], imSpec[k]);
+    const prev = Math.hypot(reSpec[k - 1], imSpec[k - 1]);
+    const next = Math.hypot(reSpec[k + 1], imSpec[k + 1]);
+    if (m <= prev || m < next) continue;
+    peaks.push({ hz: k * binHz, mag: m });
+  }
+  if (peaks.length < 2) return false;
+  peaks.sort((a, b) => b.mag - a.mag);
+
+  const p1 = peaks[0];
+  for (let i = 1; i < Math.min(peaks.length, 4); i += 1) {
+    const p2 = peaks[i];
+    if (p2.mag < p1.mag * 0.35) continue;          // 太弱，多半是噪声或共振峰
+    const ratio = Math.max(p1.hz, p2.hz) / Math.min(p1.hz, p2.hz);
+    if (ratio < 1.18) continue;                     // 太近，本来就是一回事
+    const nearInt = Math.abs(ratio - Math.round(ratio)) < 0.14 * Math.max(1, Math.round(ratio));
+    if (nearInt) continue;                          // 整数倍＝同一个人的谐波
+    return true;
+  }
+  return false;
 }
 
 /** 一帧的频谱统计：质心与三段能量 */
@@ -337,6 +378,7 @@ export function analyzeSpan(pcm, span, { padMs = 140 } = {}) {
   if (to - from < F0_N) return null;
 
   const frames = [];
+  const allRms = [];
   for (let off = from; off + F0_N <= to; off += hop) {
     let sum = 0;
     for (let i = 0; i < F0_N; i += 1) {
@@ -344,6 +386,8 @@ export function analyzeSpan(pcm, span, { padMs = 140 } = {}) {
       sum += v * v;
     }
     const rms = Math.sqrt(sum / F0_N);
+    /* 静音帧也要留着：噪声底就是从这里取的，全丢掉就没法估信噪比 */
+    allRms.push(rms);
     if (rms < 0.0022) continue;
     const { f0, clarity } = estimateF0(data, off, sampleRate);
     frames.push({ off, rms, f0, clarity });
@@ -367,6 +411,7 @@ export function analyzeSpan(pcm, span, { padMs = 140 } = {}) {
      音高接近的两个人（同性、同年龄）主要靠这组维度分开。
      统计量与倒谱共用同一次 FFT，避免长录音里做两遍变换。 */
   const cepFrames = [];
+  let overlapFrames = 0;
   voiced.forEach((f) => {
     frameSpectrum(data, f.off);
     const s = spectralStatsOf(sampleRate);
@@ -375,6 +420,8 @@ export function analyzeSpan(pcm, span, { padMs = 140 } = {}) {
     b2 += s.b2;
     b3 += s.b3;
     cepFrames.push(melCepstrumOf(sampleRate));
+    /* 复用同一帧的谱，不额外做 FFT */
+    if (overlapFromSpectrum(sampleRate)) overlapFrames += 1;
   });
   const centMed = median(cents) || 900;
   const bandSum = b1 + b2 + b3 || 1;
@@ -412,6 +459,36 @@ export function analyzeSpan(pcm, span, { padMs = 140 } = {}) {
     centroid: Math.round(centMed),
     rms: rmsRef,
     speechMs: Math.round(((to - from) / sampleRate) * 1000),
+    ...qualityOf(frames, allRms, overlapFrames, voiced.length),
+  };
+}
+
+/**
+ * 片段质量：信噪比 + 重叠占比。
+ *
+ * 远场、隔着一台笔记本开会时，真正的问题不是「分不出人」，而是分出来的结果不可信——
+ * 必须把这种不可信标出来，否则用户会把噪声当成人声编号，越改越乱。
+ *
+ * SNR 用 10 分位当噪声底、90 分位当语音峰：直接取平均会被大段静音稀释，
+ * 峰值又会被人咳嗽或关门声抬高，两端分位对偶发噪声最不敏感。
+ */
+function qualityOf(frames = [], allRms = [], overlapFrames = 0, voicedCount = 1) {
+  const noise = quantile(allRms, 0.1) || 0;
+  const peak = quantile(allRms, 0.9) || 0;
+  /* 片段内没有明显停顿（分位差不到 8 dB）时，「噪声底」其实是语音的低谷，
+     按它算出来的信噪比只会偏低，不如不给这个数。 */
+  const dynamicDb = noise > 0 && peak > noise ? 20 * Math.log10(peak / noise) : 0;
+  const snrDb = dynamicDb >= 8 ? Math.min(60, dynamicDb) : null;
+
+  /* 清晰度主导质量等级：噪声与混响都会破坏周期性，clarity 随之下降，
+     它比信噪比对「连续说话、没有停顿」的片段更稳。 */
+  const clarity = median(frames.map((f) => f.clarity)) || 0;
+  const overlapRatio = voicedCount ? overlapFrames / voicedCount : 0;
+  return {
+    snrDb: snrDb === null ? null : Math.round(snrDb),
+    clarity: Number(clarity.toFixed(2)),
+    overlapRatio: Number(overlapRatio.toFixed(2)),
+    overlap: overlapRatio >= 0.25,
   };
 }
 
@@ -651,6 +728,36 @@ export function autoCluster(rawVectors, weights, maxK = MAX_SPEAKERS) {
    统一结果结构（规范第 6 章）
    ══════════════════════════════════════════ */
 
+/** 整场质量汇总：一条录音该不该被信任，看这几个数就够了 */
+export function summarizeQuality(spans = []) {
+  if (!spans.length) return null;
+  const snrs = spans.map((s) => s.snrDb).filter((n) => Number.isFinite(n));
+  /* 云端引擎回来的结果没有声学指标：宁可报 null，也不要编一个「未知质量」顶在前面，
+     否则读取方会拿这份空壳覆盖本机算出来的真实质量。 */
+  if (!snrs.length && !spans.some((s) => Number.isFinite(s.clarity))) return null;
+  const med = snrs.length ? median(snrs) : null;
+  const clarities = spans.map((s) => s.clarity).filter((n) => Number.isFinite(n));
+  const clarityMed = clarities.length ? median(clarities) : null;
+  const overlapSpans = spans.filter((s) => s.overlap).length;
+  const noisySpans = spans.filter((s) => Number.isFinite(s.clarity) && s.clarity < 0.55).length;
+  const lowConfSpans = spans.filter((s) => Number.isFinite(s.confidence) && s.confidence < 0.45).length;
+  /* 等级看清晰度，不看信噪比：连续说话、没有停顿的片段算不出可信的噪声底，
+     但周期性（clarity）在任何片段上都成立。门限来自实测：干净近场 ≥ 0.8，
+     笔记本内置麦约 0.6–0.75，远场嘈杂与重叠会掉到 0.55 以下。 */
+  const level = clarityMed === null
+    ? (med === null ? 'unknown' : (med >= 24 ? 'clean' : med >= 14 ? 'moderate' : 'noisy'))
+    : (clarityMed >= 0.72 ? 'clean' : clarityMed >= 0.55 ? 'moderate' : 'noisy');
+  return {
+    snrDb: med === null ? null : Math.round(med),
+    clarity: clarityMed === null ? null : Number(clarityMed.toFixed(2)),
+    level,
+    overlapSpans,
+    noisySpans,
+    lowConfSpans,
+    spans: spans.length,
+  };
+}
+
 function resultOf({ recordingId, engine, taskId, engineVersion, spans, status = 'completed', note = '' }) {
   return {
     recording_id: recordingId,
@@ -660,11 +767,15 @@ function resultOf({ recordingId, engine, taskId, engineVersion, spans, status = 
     engine_version: engineVersion,
     status,
     note,
+    quality: summarizeQuality(spans),
     speakers: spans.map((s) => ({
       engine_speaker_id: s.engineSpeakerId,
       start_ms: Math.round(s.startMs),
       end_ms: Math.round(s.endMs),
       confidence: s.confidence ?? null,
+      snr_db: Number.isFinite(s.snrDb) ? s.snrDb : null,
+      clarity: Number.isFinite(s.clarity) ? s.clarity : null,
+      overlap: !!s.overlap,
       transcript_id: s.transcriptId,
     })),
   };
@@ -735,12 +846,20 @@ export class LocalDiarizationEngine {
       const dev = Math.sqrt(own.reduce((s, v, d) => s + (v - peerMean[d]) ** 2, 0));
       // 与同簇平均值的偏离 → 置信度；单人场景无法自证，固定偏保守
       const conf = k > 1 ? Math.max(0.35, Math.min(0.95, 1 - (dev / spread) * 0.22)) : 0.5;
+      /* 质量修正：远场噪声大、或这一段本身是两人同说时，归属可信度必然下降。
+         不把音量当特征参与聚类（它不稳定），但要用它来标「这段别太当真」。 */
+      const snr = Number.isFinite(x.feat.snrDb) ? x.feat.snrDb : 20;
+      const snrFactor = Math.max(0.55, Math.min(1, 0.55 + (snr / 30) * 0.45));
+      const tuned = Math.max(0.2, Math.min(0.95, conf * snrFactor * (x.feat.overlap ? 0.8 : 1)));
       return {
         engineSpeakerId: `local_s${labelOf.get(group)}`,
         transcriptId: x.span.id,
         startMs: x.span.startMs,
         endMs: x.span.endMs,
-        confidence: Number(conf.toFixed(3)),
+        confidence: Number(tuned.toFixed(3)),
+        snrDb: x.feat.snrDb,
+        clarity: x.feat.clarity,
+        overlap: x.feat.overlap,
         cluster: labelOf.get(group),
       };
     });

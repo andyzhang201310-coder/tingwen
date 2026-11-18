@@ -25,6 +25,7 @@ import {
 } from '../translate.js';
 import { createSpeakerTabs } from './doc-speaker-tabs.js';
 import { toSrt, toVtt, toDocx, printDoc } from '../export.js';
+import { extractTerms, appendDict, termLines } from '../terms.js';
 
 export function mountDoc(root, ctx, id) {
   root.innerHTML = `
@@ -53,6 +54,7 @@ export function mountDoc(root, ctx, id) {
           <button class="doc-tab" data-tab="todos">${T('doc.tabTodos')}</button>
           <div class="doc-tabs-end">
             <button class="icon-btn tr-btn" data-act="translate" aria-label="${T('doc.translate')}" title="${T('doc.translate')}">${icons.translate}</button>
+            <button class="icon-btn" data-act="terms" aria-label="${T('terms.entry')}" title="${T('terms.entry')}">${icons.marker}</button>
             <button class="fix-btn" id="fixBtn" data-act="fix" aria-label="${T('doc.fixEntry')}">${icons.sparkle}<span id="fixCount">0</span></button>
             <button class="icon-btn" data-act="expand" aria-label="${T('common.expand')}">${icons.expand}</button>
           </div>
@@ -260,6 +262,15 @@ export function mountDoc(root, ctx, id) {
   }
 
   /* ── 渲染：发言人横幅 ── */
+  /** 录音质量有问题时优先说这一句：它比「已识别 N 人」更能解释用户接下来看到的混乱 */
+  function spkQualityNote() {
+    const q = spk.quality;
+    if (!q) return '';
+    if (q.level === 'noisy') return T('doc.qualityNoisyNote');
+    if (q.overlapSpans) return T('doc.qualityOverlapNote', { n: q.overlapSpans });
+    return '';
+  }
+
   function renderBanner() {
     if (!bannerEl) return;
     if (!trs.length) { bannerEl.innerHTML = ''; return; }
@@ -287,7 +298,7 @@ export function mountDoc(root, ctx, id) {
           </div>
           <div>
             <b>${T('doc.speakerBanner', { n })}${spk.unconfirmed ? ` · ${T('doc.speakerBannerPending', { n: spk.unconfirmed })}` : ''}</b>
-            <p>${spk.unknownCount ? T('spk.unknownSegments', { n: spk.unknownCount }) : T('spk.identityNote')}</p>
+            <p>${spkQualityNote() || (spk.unknownCount ? T('spk.unknownSegments', { n: spk.unknownCount }) : T('spk.identityNote'))}</p>
           </div>
         </div>
         <button class="ghost outline sm" data-act="speakers">${T('doc.goConfirm')}</button>
@@ -773,6 +784,60 @@ export function mountDoc(root, ctx, id) {
     });
   }
 
+
+  /* ── 术语抽取 ── */
+  /**
+   * 从这篇文稿里捞出值得进词库的词。默认全选：抽取规则已经卡掉了虚词毛边与通用名词，
+   * 剩下的基本都是这场会议自己的产品名、项目代号和缩写；不想收的取消勾选即可。
+   */
+  function openTerms() {
+    const { terms } = extractTerms(trs, { customDict: ctx.settings.customDict || '', limit: 18 });
+    if (!terms.length) { toast(T('terms.empty')); return; }
+
+    const chosen = new Set(terms.map((t) => t.term));
+    const node = document.createElement('div');
+    node.innerHTML = `
+      <div class="term-list">
+        ${terms.map((t, i) => `
+          <label class="term-row is-on" data-i="${i}">
+            <input type="checkbox" checked>
+            <span class="term-main">
+              <span class="term-word">${esc(t.term)}${t.pair ? `<span class="term-badge">${esc(T('terms.pairBadge'))}</span>` : ''}</span>
+              <span class="term-meta">${esc(T('terms.hit', { n: t.hits }))}${t.pair ? ` · ${esc(T('terms.pair', { from: t.pair.from }))}` : ''}</span>
+              ${t.sample ? `<span class="term-eg">${esc(t.sample.slice(0, 48))}</span>` : ''}
+            </span>
+          </label>`).join('')}
+      </div>
+      <button class="sheet-action primary" data-add>${esc(T('terms.add', { n: terms.length }))}</button>`;
+    openSheet({ title: T('terms.title'), desc: T('terms.desc'), content: node });
+
+    const addBtn = $('[data-add]', node);
+    const syncCount = () => {
+      addBtn.textContent = chosen.size ? T('terms.add', { n: chosen.size }) : T('terms.none');
+      addBtn.disabled = chosen.size === 0;
+    };
+
+    node.addEventListener('change', (e) => {
+      const row = e.target.closest('.term-row');
+      if (!row) return;
+      const t = terms[Number(row.dataset.i)];
+      if (!t) return;
+      if (e.target.checked) { chosen.add(t.term); row.classList.add('is-on'); }
+      else { chosen.delete(t.term); row.classList.remove('is-on'); }
+      syncCount();
+    });
+
+    node.addEventListener('click', async (e) => {
+      if (!e.target.closest('[data-add]')) return;
+      const picked = terms.filter((t) => chosen.has(t.term));
+      if (!picked.length) { toast(T('terms.none')); return; }
+      const { text, added } = appendDict(ctx.settings.customDict || '', termLines(picked));
+      if (!added) { toast(T('terms.duplicated')); closeSheet(); return; }
+      ctx.settings = await setSettings({ customDict: text });
+      closeSheet();
+      toast(T('terms.added', { n: added }));
+    });
+  }
 
   /* ── 纠错面板 ── */
   const FIX_KEY = {
@@ -1356,6 +1421,7 @@ export function mountDoc(root, ctx, id) {
       return;
     }
     if (act === 'export') { openExport(); return; }
+    if (act === 'terms') { openTerms(); return; }
     if (act === 'expand') {
       const max = scrollEl.scrollHeight;
       scrollEl.scrollTo({ top: scrollEl.scrollTop > 40 ? 0 : max, behavior: 'smooth' });

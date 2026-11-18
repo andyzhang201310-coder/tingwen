@@ -10,7 +10,7 @@
 import {
   getRecording, listTranscripts, updateTranscript,
   listSpeakers, getSpeaker, createSpeaker, updateSpeaker, deleteSpeaker,
-  listTasks, putTask, addResult,
+  listTasks, putTask, addResult, listResults,
   logAssignment, listAssignments, logMerge, listMerges, updateMerge,
   clearSummaries,
 } from './store.js';
@@ -272,13 +272,34 @@ export async function recomputeStats(recordingId) {
 }
 
 /** 发言人 + 其全部片段，供确认页 / 文稿页使用 */
+/**
+ * 从已存的分离结果里取质量汇总。
+ * 结果表按时间倒序，取最新一条带 quality 的即可——重跑分离后旧质量随之作废，
+ * 不能用历史记录里较好的那一次来粉饰当前结果。
+ */
+function qualityOfResults(rows = []) {
+  for (const r of rows) {
+    try {
+      const j = typeof r.resultJson === 'string' ? JSON.parse(r.resultJson) : r.resultJson;
+      const q = j && j.quality;
+      if (!q) continue;
+      /* 早期版本写进去的空壳（四个指标全 null）不能算「有质量数据」，
+         否则一份旧结果会把真实指标顶掉。 */
+      if (!Number.isFinite(q.snrDb) && !Number.isFinite(q.clarity) && q.level === 'unknown') continue;
+      return { ...q, engine: r.engine, engineVersion: r.engineVersion };
+    } catch { /* 坏数据跳过，不影响其它结果 */ }
+  }
+  return null;
+}
+
 export async function loadSpeakerView(recordingId) {
-  const [trs, speakers, tasks, assignments, merges] = await Promise.all([
+  const [trs, speakers, tasks, assignments, merges, results] = await Promise.all([
     listTranscripts(recordingId),
     listSpeakers(recordingId),
     listTasks(recordingId),
     listAssignments(recordingId),
     listMerges(recordingId),
+    listResults(recordingId).catch(() => []),
   ]);
   const byId = new Map(speakers.map((s) => [s.id, s]));
   const groups = new Map();
@@ -296,6 +317,7 @@ export async function loadSpeakerView(recordingId) {
     tasks,
     assignments,
     merges,
+    quality: qualityOfResults(results),
     unknownCount: trs.filter((t) => !t.speakerId).length,
     unconfirmed: speakers.filter((s) => !s.mergedInto && s.identityStatus === 'unconfirmed').length,
   };
