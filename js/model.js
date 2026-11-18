@@ -17,6 +17,21 @@ export function engineLabel(mode) {
   return { auto: T('engine.auto'), local: T('engine.local'), cloud: T('engine.cloud') }[mode] || T('engine.auto');
 }
 
+/**
+ * 录音被系统中断的原因（产品文档 7.2「显示中断原因（可获得时）」）。
+ * 未知原因也要给一句人话，不能把内部枚举值直接摆给用户看。
+ */
+const INTR_LABEL = {
+  trackEnded: 'intr.trackEnded',
+  micBusy: 'intr.micBusy',
+  recorderError: 'intr.recorderError',
+};
+
+export function intrReasonText(reason) {
+  const key = INTR_LABEL[reason];
+  return key ? T(key) : T('intr.unknown');
+}
+
 export function engineShort(rec) {
   if (!rec) return '';
   if (rec.engineUsed === 'manual') return T('engine.shortManual');

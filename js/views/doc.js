@@ -10,7 +10,7 @@ import {
   getTranslationMap, translationLangs, clearTranslations,
 } from '../store.js';
 import { analyze } from '../ai.js';
-import { statusOf, engineLabel, folderLabel } from '../model.js';
+import { statusOf, engineLabel, folderLabel, intrReasonText } from '../model.js';
 import { T } from '../i18n.js';
 import {
   correctText, optionsFromSettings, suggestMerges, llmCorrect, llmReady,
@@ -44,6 +44,7 @@ export function mountDoc(root, ctx, id) {
 
       <div class="scroll doc-scroll" id="docScroll">
         <section class="takeaways" id="takeaways"></section>
+        <div id="intrBar"></div>
         <div id="spkBanner"></div>
         <div id="repairBar"></div>
 
@@ -95,6 +96,7 @@ export function mountDoc(root, ctx, id) {
   const editBar = $('#editBar', root);
   const bannerEl = $('#spkBanner', root);
   const repairBar = $('#repairBar', root);
+  const intrBar = $('#intrBar', root);
   const trBar = $('#trBar', root);
 
   let rec = null;
@@ -201,6 +203,22 @@ export function mountDoc(root, ctx, id) {
         ? `<ul class="tk-list">${bullets.map((b) => `<li data-jump="${b.startMs}">${esc(b.text)}</li>`).join('')}</ul>`
         : `<p class="tk-empty">${trs.length ? T('doc.pointsShort') : T('doc.noTranscript')}</p>`}
       ${tags.length ? `<div class="tk-chips">${tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}`;
+  }
+
+  /* ── 渲染：录音被系统中断（产品文档 7.2「显示中断原因，保存已完成分段」） ──
+     不放信息弹层：用户结束录音后直接落在文稿页，只有放在正文上方才解释得清
+     「为什么这段只有两分钟」。 */
+  function renderIntrBar() {
+    if (!intrBar) return;
+    if (!rec?.interrupted) { intrBar.innerHTML = ''; return; }
+    intrBar.innerHTML = `
+      <div class="repair-bar intr-bar">
+        <span class="repair-icon">${icons.info}</span>
+        <div class="repair-main">
+          <b>${esc(T('doc.intrTitle'))}</b>
+          <span>${esc(T('doc.intrBody', { reason: intrReasonText(rec.interrupted) }))}</span>
+        </div>
+      </div>`;
   }
 
   /* ── 渲染：未识别区间（补识别入口，对应产品文档 8.2「断网恢复」） ── */
@@ -1140,6 +1158,7 @@ export function mountDoc(root, ctx, id) {
           <span class="tag">${esc((rec.mime || 'audio').split(';')[0])}</span>
         </div>
         ${rec.bookmarks?.length ? `<div class="hint" style="margin-top:10px">${T('doc.bookmarks')}：${rec.bookmarks.map((b) => fmtClock(b.ms, false)).join(' · ')}</div>` : ''}
+        ${rec.interrupted ? `<div class="hint" style="margin-top:8px">${T('doc.intrBody', { reason: intrReasonText(rec.interrupted) })}</div>` : ''}
         ${rec.integrity
           ? `<div class="hint" style="margin-top:8px">${T('doc.integrityLine', {
             n: rec.integrity.segments,
@@ -1307,6 +1326,7 @@ export function mountDoc(root, ctx, id) {
     $('[data-act="fav"]', root).innerHTML = rec.favorite ? icons.heartFill : icons.heart;
     $('[data-act="fav"]', root).style.color = rec.favorite ? 'var(--red)' : '';
     renderTakeaways();
+    renderIntrBar();
     renderBanner();
     renderRepairBar();
     renderToolbar();

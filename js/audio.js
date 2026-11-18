@@ -22,6 +22,11 @@ export class Recorder {
     this.onLevel = null;
     this.onFrame = null;   // 时域帧回调（实时发言人指示用，不落库）
     this.onPcm = null;     // 16kHz/16bit/mono 原始 PCM 帧回调（云端流式识别推流用）
+    /* 麦克风被系统/其它应用打断（来电、语音助手、其它录音 App）：
+       ended 是硬中断（轨道已死），mute/unmute 是软占用（可能自己恢复） */
+    this.onTrackEnded = null;
+    this.onMute = null;
+    this.onUnmute = null;
     this._pcmNode = null;
     this._pcmSink = null;
     this.pcmFrames = 0;    // 已产出的 16k PCM 帧数（排查「识别中但无音频」用）
@@ -73,7 +78,30 @@ export class Recorder {
         if (this.elapsed - this._segStart >= this.segmentMs) this._flushSegment();
       }
     };
-    this.rec.onerror = (e) => console.warn('MediaRecorder error', e);
+    this.rec.onerror = (e) => {
+      console.warn('MediaRecorder error', e);
+      /* 编码器/采集链路出错时轨道通常也已不可用，按硬中断上报 */
+      this.onTrackEnded?.(e?.error?.name || 'recorderError');
+    };
+
+    /* 轨道级中断监听：Android 上来电或其它应用抢占麦克风时先 mute，拿不回来就 ended。
+       mute 不立刻当失败（可能是系统短暂抢占，几秒后自行恢复），交给上层决定。 */
+    const track = this.stream.getAudioTracks()[0];
+    if (track) {
+      this._track = track;
+      track.addEventListener('ended', () => {
+        if (!this.active) return;
+        this.onTrackEnded?.('trackEnded');
+      });
+      track.addEventListener('mute', () => {
+        if (!this.active) return;
+        this.onMute?.();
+      });
+      track.addEventListener('unmute', () => {
+        if (!this.active) return;
+        this.onUnmute?.();
+      });
+    }
 
     // 电平分析（不接 destination，避免回声）
     const AC = window.AudioContext || window.webkitAudioContext;

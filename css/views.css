@@ -1488,3 +1488,7 @@ html[data-theme="light"] .wave-badge { color: rgba(105, 62, 42, 0.75); }
 .spk-q-badge.bad { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
 .spk-q-badge.mute { color: var(--text-3); }
 .spk-q-detail { font-size: 12px; color: var(--text-2); }
+
+/* 录音被系统中断的说明条：复用补识别条的骨架，用黄色描边区分「这是解释，不是待办」 */
+.intr-bar { border-color: color-mix(in srgb, var(--yellow, #f5a524) 45%, transparent); }
+.intr-bar .repair-icon { color: var(--yellow, #f5a524); }

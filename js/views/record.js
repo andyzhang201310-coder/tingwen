@@ -112,6 +112,13 @@ export function mountRecord(root, ctx) {
   /* 通知栏「停止录音」的取消订阅函数；页面离开时必须清掉，否则回到录音页会重复绑定 */
   let keepStopOff = null;
   let keepAliveOn = false;
+  /* 存储余量与麦克风占用：两者都会导致「以为在录、实际没录」，必须在状态栏直说 */
+  let storageWarn = '';       // '' | 'low' | 'critical'
+  let storageFree = 0;
+  let micBlocked = false;
+  let muteTimer = 0;
+  /* 录音被系统中断的原因（trackEnded / micBusy / recorderError），写入元信息供文稿页说明 */
+  let interruptReason = '';
 
   /* ── 界面更新 ── */
   /** 通知栏文案用的 mm:ss */
@@ -119,6 +126,30 @@ export function mountRecord(root, ctx) {
     const t = Math.max(0, Math.round(ms));
     return `${String(Math.floor(t / 60000)).padStart(2, '0')}:${String(Math.floor((t % 60000) / 1000)).padStart(2, '0')}`;
   };
+
+  /**
+   * 存储余量检查（产品文档 5.4「空间不足时明确告警，不静默丢弃音频」/ 7.2 同一条）。
+   * 用 navigator.storage.estimate 的 quota - usage：WebView 的配额本身会随磁盘剩余收缩，
+   * 折算出来的余量能反映「还能录多久」，比直接问磁盘更接近实际可写空间。
+   * 拿不到配额时静默跳过，不让一个可选提示把录音搞挂。
+   */
+  async function checkStorage() {
+    try {
+      if (!navigator.storage?.estimate) return;
+      const { quota = 0, usage = 0 } = await navigator.storage.estimate();
+      if (!quota) return;
+      const free = Math.max(0, quota - usage);
+      storageFree = free;
+      const MB = 1024 * 1024;
+      const next = free < 30 * MB ? 'critical' : free < 120 * MB ? 'low' : '';
+      if (next !== storageWarn) {
+        storageWarn = next;
+        if (next === 'critical') toast(T('rec.storageCritical', { size: fmtBytes(free) }));
+        else if (next === 'low') toast(T('rec.storageLow', { size: fmtBytes(free) }));
+        paintStatus();
+      }
+    } catch { /* 配额接口不可用时不影响录音 */ }
+  }
 
   function winInfo() {
     const t = Math.max(recorder.elapsed, 0);
@@ -161,6 +192,11 @@ export function mountRecord(root, ctx) {
 
   function statusHtml() {
     const parts = [];
+    /* 存储和麦克风状态放在最前面：它们决定「这段录音到底有没有录上」 */
+    if (storageWarn) {
+      parts.push(`<b class="warn">${esc(T(storageWarn === 'critical' ? 'rec.storageCritical' : 'rec.storageLow', { size: fmtBytes(storageFree) }))}</b>`);
+    }
+    if (micBlocked) parts.push(`<b class="warn">${esc(T('rec.intrMute'))}</b>`);
     const modeText = engineMode === 'local' ? T('rec.modeLocal') : engineMode === 'cloud' ? T('rec.modeCloud') : T('rec.modeAuto');
     parts.push(esc(modeText));
     const ENG_LABEL = { sdk: T('rec.engineSdkLive'), cloud: T('rec.engineCloudLive'), native: T('rec.engineNativeLive'), browser: T('rec.engineBrowserLive') };
@@ -475,6 +511,38 @@ export function mountRecord(root, ctx) {
     recorder.onPcm = (pcm) => { if (!paused) asr?.feed?.(pcm); };
     /* 电平喂给识别层：Web Speech API 引擎用它判断「没人说话」还是「会话卡死」 */
     recorder.onLevel = (t, v) => asr?.voice?.(v);
+
+    /* ── 麦克风被系统打断（产品文档 7.2「录音被系统中断」）──
+       硬中断（轨道 ended）：编码链路已断，继续挂着只会让用户以为还在录，
+       立刻按「完成」的同一套流程收尾，已录内容一定落盘。
+       软占用（mute）：多为来电/语音助手短暂抢占，给 10 秒恢复窗口，拿不回来再收尾。 */
+    recorder.onTrackEnded = (reason) => {
+      if (finished) return;
+      interruptReason = reason || 'trackEnded';
+      closeDownWindow();
+      toast(T('rec.intrEnded'));
+      finish({ goto: 'doc', silent: true });
+    };
+    recorder.onMute = () => {
+      if (finished) return;
+      micBlocked = true;
+      paintStatus();
+      clearTimeout(muteTimer);
+      muteTimer = setTimeout(() => {
+        if (finished || !micBlocked) return;
+        interruptReason = 'micBusy';
+        closeDownWindow();
+        toast(T('rec.intrMuteLost'));
+        finish({ goto: 'doc', silent: true });
+      }, 10000);
+    };
+    recorder.onUnmute = () => {
+      micBlocked = false;
+      clearTimeout(muteTimer);
+      paintStatus();
+    };
+    checkStorage();
+
     if (asr.supported) asr.start();
     paintStatus();
     paintAsrHint();
@@ -497,6 +565,8 @@ export function mountRecord(root, ctx) {
           size: recorder.segments.reduce((s, x) => s + x.blob.size, 0),
         });
       } catch { /* 忽略 */ }
+      /* 每 4 秒顺带查一次存储余量：30 秒一段、一路写下去，等真写满再报就晚了 */
+      checkStorage();
       /* 通知栏同步时长与已落盘段数：锁屏时用户看不到界面，只能看通知 */
       if (keepAliveOn) {
         updateKeepAlive({
@@ -620,6 +690,8 @@ export function mountRecord(root, ctx) {
         ? { segments: integrity.total, ok: integrity.ok, bad: integrity.bad.length, holes: integrity.holes.length }
         : null,
       pending: { count: gaps.length, totalMs: gaps.reduce((n, g) => n + (g.endMs - g.startMs), 0) },
+      /* 被系统中断而结束的录音要留痕：否则用户只看到「时长比预期短」，不知道发生了什么 */
+      interrupted: interruptReason || null,
     });
     if (gaps.length && keepAudio) await enqueueGaps(rec.id, gaps);
     await clearSegments(rec.id);
