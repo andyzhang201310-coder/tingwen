@@ -16,6 +16,19 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        // 固定使用与旧版（v3.3）一致的调试签名，保证跨电脑打包时能覆盖安装、数据不丢。
+        // 密钥文件不入库；缺失时自动回退到本机默认 debug 签名。
+        debug {
+            def ks = rootProject.file('keystore/tingwen-debug.keystore')
+            if (ks.exists()) {
+                storeFile ks
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false

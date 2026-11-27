@@ -38,3 +38,7 @@ android/app/libs/*.aar
 
 # 本地大模型密钥（不入库，仅本机/APK 内置：js/llm-defaults.local.js）
 js/llm-defaults.local.js
+
+# 安卓签名：旧版调试签名文件与本地 keystore，不入库
+android/keystore/
+dist/*.keystore
