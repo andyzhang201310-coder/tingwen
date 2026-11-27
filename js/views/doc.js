@@ -1,8 +1,9 @@
 import {
   $, $$, esc, fmtClock, fmtDur, fmtDate, fmtBytes, safeName,
-  copyText, downloadText, downloadBlob, debounce,
+  copyText, downloadText, downloadBlob, debounce, audioExt,
 } from '../util.js';
 import { icons } from '../icons.js';
+import { canWriteFile, saveBlobNative } from '../file-export.js';
 import { toast, openSheet, confirmDialog, renderWave, closeSheet } from '../ui.js';
 import {
   getRecording, updateRecording, listTranscripts, updateTranscript,
@@ -738,6 +739,15 @@ export function mountDoc(root, ctx, id) {
     return trs.map((t) => `[${fmtClock(t.startMs, false)}]${nameOf(t)}${t.text}`).join('\n');
   }
 
+  /**
+   * 导出结果提示：安卓能拿到真实落盘路径就明说存在哪，
+   * 失败也要明说——之前 WebView 下载 blob 静默失败，还弹「已导出」，等于骗人。
+   */
+  function exportToast(r, doneKey) {
+    if (!r || !r.ok) { toast(T('export.failed')); return; }
+    toast(r.path ? T('export.savedTo', { path: r.path }) : T(doneKey));
+  }
+
   function openExport() {
     const node = document.createElement('div');
     const selNow = selectionText();
@@ -752,6 +762,7 @@ export function mountDoc(root, ctx, id) {
         <button class="sheet-action" data-e="json">${icons.list}<span>${T('export.json')}</span></button>
         <button class="sheet-action" data-e="pdf">${icons.share}<span>${T('export.pdf')}</span></button>
         <button class="sheet-action" data-e="audio">${icons.download}<span>${T('export.audio')}</span></button>
+        ${canWriteFile() ? `<button class="sheet-action" data-e="audioShare">${icons.share}<span>${T('export.shareAudio')}</span></button>` : ''}
       </div>
       <p class="hint" style="margin-top:10px">${T('export.subtitleHint')}</p>`;
     openSheet({ title: T('export.title'), desc: T('export.desc'), content: node });
@@ -774,26 +785,26 @@ export function mountDoc(root, ctx, id) {
           ? (sel ? T('doc.copiedSel', { n: sel.length }) : T('export.copied'))
           : T('export.copyFailed'));
       } else if (k === 'txt') {
-        downloadText(`${safeName(rec.title)}.txt`, `${head}\n${transcriptText()}`);
-        toast(T('export.doneTxt'));
+        const r = await downloadText(`${safeName(rec.title)}.txt`, `${head}\n${transcriptText()}`);
+        exportToast(r, 'export.doneTxt');
       } else if (k === 'docx') {
         if (!trs.length) { toast(T('doc.noTranscript')); return; }
         const blob = await toDocx({
           title: rec.title, meta, takeaways: analysis.takeaways, trs, nameOf: nameOfId, labels,
         });
-        downloadBlob(`${safeName(rec.title)}.docx`, blob);
-        toast(T('export.doneDocx'));
+        const r = await downloadBlob(`${safeName(rec.title)}.docx`, blob);
+        exportToast(r, 'export.doneDocx');
       } else if (k === 'srt' || k === 'vtt') {
         if (!trs.length) { toast(T('doc.noTranscript')); return; }
         const text = k === 'srt'
           ? toSrt(trs, { nameOf: nameOfId })
           : toVtt(trs, { nameOf: nameOfId, title: rec.title });
-        downloadText(
+        const r = await downloadText(
           `${safeName(rec.title)}.${k}`,
           text,
           k === 'srt' ? 'application/x-subrip;charset=utf-8' : 'text/vtt;charset=utf-8',
         );
-        toast(T(k === 'srt' ? 'export.doneSrt' : 'export.doneVtt'));
+        exportToast(r, k === 'srt' ? 'export.doneSrt' : 'export.doneVtt');
       } else if (k === 'pdf') {
         if (!trs.length) { toast(T('doc.noTranscript')); return; }
         /* 安卓 WebView 的 window.print 是空操作，别让用户点了没反应 */
@@ -808,8 +819,8 @@ export function mountDoc(root, ctx, id) {
         const md = `# ${rec.title}\n\n> ${fmtDate(rec.startedAt)} · ${fmtDur(rec.durationMs)} · ${engineLabel(rec.engineMode)}\n\n## ${T('export.mdPoints')}\n\n${
           analysis.takeaways.map((t) => `- ${t.text}`).join('\n') || `- ${T('common.none')}`
         }\n\n## ${T('export.mdBody')}\n\n${trs.map((t) => `**${fmtClock(t.startMs, false)}** ${t.text}`).join('\n\n')}\n`;
-        downloadText(`${safeName(rec.title)}.md`, md, 'text/markdown;charset=utf-8');
-        toast(T('export.doneMd'));
+        const r = await downloadText(`${safeName(rec.title)}.md`, md, 'text/markdown;charset=utf-8');
+        exportToast(r, 'export.doneMd');
       } else if (k === 'json') {
         const data = {
           recording: {
@@ -823,13 +834,17 @@ export function mountDoc(root, ctx, id) {
             edited: !!t.edited, status: t.status,
           })),
         };
-        downloadText(`${safeName(rec.title)}.json`, JSON.stringify(data, null, 2), 'application/json');
-        toast(T('export.doneJson'));
-      } else if (k === 'audio') {
+        const r = await downloadText(`${safeName(rec.title)}.json`, JSON.stringify(data, null, 2), 'application/json');
+        exportToast(r, 'export.doneJson');
+      } else if (k === 'audio' || k === 'audioShare') {
         if (!rec.audio) { toast(T('doc.noAudio')); return; }
-        const ext = (rec.mime || '').includes('mp4') ? 'm4a' : 'webm';
-        downloadBlob(`${safeName(rec.title)}.${ext}`, rec.audio);
-        toast(T('export.doneAudio'));
+        const name = `${safeName(rec.title)}.${audioExt(rec.mime || rec.audio.type)}`;
+        if (k === 'audioShare') {
+          /* 分享走原生：先落盘到「下载/听文/」，再拉起系统分享面板 */
+          const saved = await saveBlobNative(rec.audio, name, { share: true }).catch(() => null);
+          if (saved) { toast(T('export.shareAudioDone')); return; }
+        }
+        exportToast(await downloadBlob(name, rec.audio), 'export.doneAudio');
       }
     });
   }

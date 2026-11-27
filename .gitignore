@@ -42,3 +42,5 @@ js/llm-defaults.local.js
 # 安卓签名：旧版调试签名文件与本地 keystore，不入库
 android/keystore/
 dist/*.keystore
+# 设备数据备份（含录音，体积大）
+dist/backup/

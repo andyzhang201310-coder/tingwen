@@ -1,4 +1,5 @@
 import { isEn } from './i18n.js';
+import { saveBlobNative } from './file-export.js';
 
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -143,23 +144,59 @@ export async function copyText(text) {
   }
 }
 
-export function downloadBlob(filename, blob) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+/**
+ * 保存一个文件到用户能找到的地方。
+ *
+ * 安卓包走原生写入（下载/听文/），因为 WebView 不支持 <a download> 下载 blob；
+ * 网页端仍用锚点下载。返回值用于给用户真实反馈：
+ *   { ok: true, path }  已落盘（path 是手机上的展示路径）
+ *   { ok: true }        网页端已触发下载，无法回读结果
+ *   { ok: false }       写入失败
+ */
+export async function downloadBlob(filename, blob) {
+  try {
+    const saved = await saveBlobNative(blob, filename);
+    if (saved) return { ok: true, path: saved.path };
+  } catch (e) {
+    console.warn('[export] native save failed', e);
+    return { ok: false, error: String(e?.message || e) };
+  }
+  try {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
 }
 
-export function downloadText(filename, text, mime = 'text/plain;charset=utf-8') {
-  downloadBlob(filename, new Blob([text], { type: mime }));
+export async function downloadText(filename, text, mime = 'text/plain;charset=utf-8') {
+  return downloadBlob(filename, new Blob([text], { type: mime }));
 }
 
 export function safeName(s) {
   return (s || (isEn() ? 'recording' : '记录')).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
+}
+
+/**
+ * 音频扩展名按真实 MIME 走，不能一律 .webm：
+ * 演示录音是 WAV、云端引擎回传可能是 mp4/aac，后缀错了播放器就认不出来。
+ */
+export function audioExt(mime = '') {
+  const m = String(mime).toLowerCase();
+  if (m.includes('wav')) return 'wav';
+  if (m.includes('mp4') || m.includes('aac') || m.includes('m4a')) return 'm4a';
+  if (m.includes('ogg')) return 'ogg';
+  if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
+  if (m.includes('webm')) return 'webm';
+  if (m.includes('flac')) return 'flac';
+  return 'webm';
 }
 
 export async function sha256Short(blob) {

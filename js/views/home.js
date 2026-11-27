@@ -1,4 +1,4 @@
-import { $, $$, esc, fmtDate, fmtDur, dateGroupLabel, debounce, fmtBytes, sameDay } from '../util.js';
+import { $, $$, esc, fmtDate, fmtDur, dateGroupLabel, debounce, fmtBytes, sameDay, downloadBlob, safeName, audioExt } from '../util.js';
 import { icons } from '../icons.js';
 import { toast, openSheet, confirmDialog, swallowNextClick } from '../ui.js';
 import {
@@ -336,13 +336,11 @@ export function mountHome(root, ctx) {
         actions: [
           { label: T('common.rename'), icon: 'edit', onClick: () => rename(rec.id) },
           { label: rec.favorite ? T('home.removeFavorite') : T('home.addFavorite'), icon: 'heart', onClick: async () => { await updateRecording(rec.id, { favorite: !rec.favorite }); await refresh(); } },
-          { label: T('home.exportAudio'), icon: 'download', onClick: () => {
+          { label: T('home.exportAudio'), icon: 'download', onClick: async () => {
             if (!rec.audio) { toast(T('home.noAudio')); return; }
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(rec.audio);
-            a.download = `${rec.title}.webm`;
-            a.click();
-            setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+            const r = await downloadBlob(`${safeName(rec.title)}.${audioExt(rec.mime || rec.audio.type)}`, rec.audio);
+            if (!r.ok) toast(T('export.failed'));
+            else toast(r.path ? T('export.savedTo', { path: r.path }) : T('export.doneAudio'));
           } },
           { label: T('common.delete'), icon: 'trash', danger: true, onClick: async () => {
             const ok = await confirmDialog({ title: T('home.deleteTitle'), message: T('home.deleteMsg'), confirmText: T('common.delete'), danger: true });

@@ -4,6 +4,7 @@ import android.os.Bundle;
 
 import com.getcapacitor.BridgeActivity;
 import com.tingwen.app.plugins.BailianAsrPlugin;
+import com.tingwen.app.plugins.FileExportPlugin;
 import com.tingwen.app.plugins.RecordingKeepAlivePlugin;
 
 public class MainActivity extends BridgeActivity {
@@ -15,6 +16,7 @@ public class MainActivity extends BridgeActivity {
         // 在 super.onCreate 之前注册原生插件（Capacitor 官方要求）
         registerPlugin(BailianAsrPlugin.class);
         registerPlugin(RecordingKeepAlivePlugin.class);
+        registerPlugin(FileExportPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

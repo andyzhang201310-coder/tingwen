@@ -1,5 +1,5 @@
 /* 听文 TingWen · 离线外壳缓存（仅缓存静态资源，不缓存录音数据） */
-const CACHE = 'tingwen-shell-v43';
+const CACHE = 'tingwen-shell-v44';
 const ASSETS = [
   './',
   './index.html',
@@ -8,6 +8,7 @@ const ASSETS = [
   './css/views.css',
   './js/main.js',
   './js/util.js',
+  './js/file-export.js',
   './js/version.js',
   './js/i18n.js',
   './js/icons.js',
