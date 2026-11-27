@@ -8,6 +8,7 @@ import { builtinCount, parseDict, llmReady, llmCorrect } from '../correct.js';
 import { listModels, normalizeModel } from '../llm.js';
 import { T, locale } from '../i18n.js';
 import { ASR_PROVIDERS, providerById } from '../asr-providers.js';
+import { APP_VERSION } from '../version.js';
 
 const UI_LANGS = () => [
   { label: T('set.langZh'), value: 'zh-CN' },
@@ -122,11 +123,6 @@ export function mountSettings(root, ctx) {
     const liveKey = s.liveAsrKey || s.asrProviders?.bailian?.key || '';
 
     scroll.innerHTML = `
-      <div class="settings-hero">
-        <h2>${T('set.hero')}</h2>
-        <p>${T('set.heroDesc')}</p>
-      </div>
-
       <div class="group">
         <div class="section-label">${T('set.general')}</div>
         ${row({ icon: 'translate', label: T('set.lang'), value: current(UI_LANGS(), s.uiLang), act: 'ui-lang' })}
@@ -203,11 +199,11 @@ export function mountSettings(root, ctx) {
         <div class="section-label">${T('set.groupAdvanced')}</div>
         ${row({ icon: 'waveform', label: T('set.engineDoc'), act: 'about-engine' })}
         ${row({ icon: 'lock', label: T('set.privacy'), act: 'privacy' })}
-        ${row({ icon: 'info', label: T('set.about'), value: T('set.aboutValue'), act: 'about' })}
+        ${row({ icon: 'info', label: T('set.about'), value: T('set.aboutValue', { v: APP_VERSION }), act: 'about' })}
       </div>
 
       <div class="set-foot">
-        ${T('set.footer')}<br />
+        ${T('set.footer', { v: APP_VERSION })}<br />
         ${T('set.footer2')}
       </div>`;
   }
@@ -364,7 +360,7 @@ export function mountSettings(root, ctx) {
         content: `<p class="sheet-desc">${T('set.aboutBody')}</p>
           <p class="sheet-desc">${T('set.aboutBody2')}</p>
           <p class="sheet-desc">${T('set.aboutBody3')}</p>
-          <p class="hint">${T('set.version', { date: new Date().toLocaleDateString(locale()) })}</p>`,
+          <p class="hint">${T('set.version', { v: APP_VERSION, date: new Date().toLocaleDateString(locale()) })}</p>`,
         actions: [{ label: T('set.clearAll'), danger: true, icon: 'trash', onClick: clearAll }],
       });
       return;
