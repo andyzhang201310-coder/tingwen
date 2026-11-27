@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="听文">
+  <!-- 应用内标识：透明底，暖色气泡 -->
+  <defs>
+    <linearGradient id="tw-mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffc45f"/>
+      <stop offset="1" stop-color="#ff7c17"/>
+    </linearGradient>
+    <mask id="tw-mark-cut">
+      <rect x="106" y="136" width="300" height="212" rx="58" fill="#fff"/>
+      <line x1="166" y1="322" x2="156" y2="384" stroke="#fff" stroke-width="46" stroke-linecap="round"/>
+      <line x1="156" y1="384" x2="232" y2="330" stroke="#fff" stroke-width="46" stroke-linecap="round"/>
+      <rect x="184" y="215" width="16" height="58" rx="8" fill="#000"/>
+      <rect x="216" y="196" width="16" height="96" rx="8" fill="#000"/>
+      <rect x="248" y="180" width="16" height="128" rx="8" fill="#000"/>
+      <rect x="280" y="196" width="16" height="96" rx="8" fill="#000"/>
+      <rect x="312" y="211" width="16" height="66" rx="8" fill="#000"/>
+    </mask>
+  </defs>
+  <rect width="512" height="512" fill="url(#tw-mark)" mask="url(#tw-mark-cut)"/>
+</svg>

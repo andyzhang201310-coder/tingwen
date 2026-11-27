@@ -7,15 +7,15 @@ SRC = ROOT
 DST = os.path.join(ROOT, 'www')
 ITEMS = ['index.html', 'manifest.webmanifest', 'sw.js', 'css', 'js', 'assets']
 
-if os.path.isdir(DST):
-    shutil.rmtree(DST)
-os.makedirs(DST, exist_ok=True)
+if not os.path.isdir(DST):
+    os.makedirs(DST, exist_ok=True)
 
+# 覆盖式同步：不整目录删除，避免误删与文件数阈值告警；已删除的旧文件可能残留
 for name in ITEMS:
     s = os.path.join(SRC, name)
     d = os.path.join(DST, name)
     if os.path.isdir(s):
-        shutil.copytree(s, d)
+        shutil.copytree(s, d, dirs_exist_ok=True)
     elif os.path.isfile(s):
         shutil.copy2(s, d)
     else:

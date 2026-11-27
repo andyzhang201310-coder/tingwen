@@ -14,7 +14,7 @@ export function mountHome(root, ctx) {
     <div class="view home">
       <header class="home-head">
         <div class="home-top">
-          <h1 class="app-title">${isEn() ? 'TingWen' : '听文'}<span class="app-title-en ${isEn() ? 'is-zh' : ''}">${isEn() ? '听文' : 'TINGWEN'}</span></h1>
+          <h1 class="app-title"><img class="app-mark" src="./assets/mark.svg" alt="" width="30" height="30" />${isEn() ? 'TingWen' : '听文'}<span class="app-title-en ${isEn() ? 'is-zh' : ''}">${isEn() ? '听文' : 'TINGWEN'}</span></h1>
           <button class="icon-btn accent" data-act="settings" aria-label="${T('home.settings')}">${icons.gear}</button>
         </div>
         <div class="searchbar">
