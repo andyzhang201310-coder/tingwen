@@ -1,10 +1,10 @@
 import {
   $, $$, esc, fmtClock, fmtDur, fmtDate, fmtBytes, safeName,
-  copyText, downloadText, downloadBlob, debounce, audioExt,
+  copyText, downloadText, downloadBlob, debounce, audioExt, needsAacWrap,
 } from '../util.js';
 import { icons } from '../icons.js';
 import { canWriteFile, saveBlobNative } from '../file-export.js';
-import { toast, openSheet, confirmDialog, renderWave, closeSheet } from '../ui.js';
+import { toast, openSheet, confirmDialog, renderWave, closeSheet, toastSticky } from '../ui.js';
 import {
   getRecording, updateRecording, listTranscripts, updateTranscript,
   addTranscript, deleteTranscript, softDeleteRecording, purgeRecording, setSettings,
@@ -838,13 +838,29 @@ export function mountDoc(root, ctx, id) {
         exportToast(r, 'export.doneJson');
       } else if (k === 'audio' || k === 'audioShare') {
         if (!rec.audio) { toast(T('doc.noAudio')); return; }
-        const name = `${safeName(rec.title)}.${audioExt(rec.mime || rec.audio.type)}`;
-        if (k === 'audioShare') {
-          /* 分享走原生：先落盘到「下载/听文/」，再拉起系统分享面板 */
-          const saved = await saveBlobNative(rec.audio, name, { share: true }).catch(() => null);
-          if (saved) { toast(T('export.shareAudioDone')); return; }
+        /* 录音是 webm/opus，直接导出等于给用户一个打不开的文件：
+           真机走原生转 AAC，文件名同步换成 .m4a；网页端没有转码能力，保持原后缀。 */
+        const mime = rec.mime || rec.audio.type || '';
+        const conv = canWriteFile() && needsAacWrap(mime);
+        const name = `${safeName(rec.title)}.${conv ? 'm4a' : audioExt(mime)}`;
+        const doneTip = conv ? toastSticky(T('export.converting')) : null;
+        try {
+          if (k === 'audioShare') {
+            /* 分享走原生：先落盘到「下载/听文/」，再拉起系统分享面板 */
+            const saved = await saveBlobNative(rec.audio, name, { share: true, convert: conv }).catch(() => null);
+            if (saved) {
+              doneTip?.();
+              toast(saved.converted || !conv ? T('export.shareAudioDone') : T('export.convertFailed'));
+              return;
+            }
+          }
+          const r = await downloadBlob(name, rec.audio, { convert: conv });
+          doneTip?.();
+          if (r.ok && conv && r.converted === false) { toast(T('export.convertFailed')); return; }
+          exportToast(r, 'export.doneAudio');
+        } finally {
+          doneTip?.();
         }
-        exportToast(await downloadBlob(name, rec.audio), 'export.doneAudio');
       }
     });
   }

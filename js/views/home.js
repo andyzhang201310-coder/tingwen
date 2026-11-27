@@ -1,6 +1,7 @@
-import { $, $$, esc, fmtDate, fmtDur, dateGroupLabel, debounce, fmtBytes, sameDay, downloadBlob, safeName, audioExt } from '../util.js';
+import { $, $$, esc, fmtDate, fmtDur, dateGroupLabel, debounce, fmtBytes, sameDay, downloadBlob, safeName, audioExt, needsAacWrap } from '../util.js';
+import { canWriteFile } from '../file-export.js';
 import { icons } from '../icons.js';
-import { toast, openSheet, confirmDialog, swallowNextClick } from '../ui.js';
+import { toast, openSheet, confirmDialog, swallowNextClick, toastSticky } from '../ui.js';
 import {
   listRecordings, createRecording, updateRecording, softDeleteRecording,
   purgeRecording, listSegments, clearSegments, verifySegments, db,
@@ -338,8 +339,13 @@ export function mountHome(root, ctx) {
           { label: rec.favorite ? T('home.removeFavorite') : T('home.addFavorite'), icon: 'heart', onClick: async () => { await updateRecording(rec.id, { favorite: !rec.favorite }); await refresh(); } },
           { label: T('home.exportAudio'), icon: 'download', onClick: async () => {
             if (!rec.audio) { toast(T('home.noAudio')); return; }
-            const r = await downloadBlob(`${safeName(rec.title)}.${audioExt(rec.mime || rec.audio.type)}`, rec.audio);
+            const mime = rec.mime || rec.audio.type || '';
+            const conv = canWriteFile() && needsAacWrap(mime);
+            const doneTip = conv ? toastSticky(T('export.converting')) : null;
+            const r = await downloadBlob(`${safeName(rec.title)}.${conv ? 'm4a' : audioExt(mime)}`, rec.audio, { convert: conv });
+            doneTip?.();
             if (!r.ok) toast(T('export.failed'));
+            else if (conv && r.converted === false) toast(T('export.convertFailed'));
             else toast(r.path ? T('export.savedTo', { path: r.path }) : T('export.doneAudio'));
           } },
           { label: T('common.delete'), icon: 'trash', danger: true, onClick: async () => {

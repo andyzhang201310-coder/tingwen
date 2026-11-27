@@ -153,10 +153,10 @@ export async function copyText(text) {
  *   { ok: true }        网页端已触发下载，无法回读结果
  *   { ok: false }       写入失败
  */
-export async function downloadBlob(filename, blob) {
+export async function downloadBlob(filename, blob, opts = {}) {
   try {
-    const saved = await saveBlobNative(blob, filename);
-    if (saved) return { ok: true, path: saved.path };
+    const saved = await saveBlobNative(blob, filename, opts);
+    if (saved) return { ok: true, path: saved.path, converted: saved.converted };
   } catch (e) {
     console.warn('[export] native save failed', e);
     return { ok: false, error: String(e?.message || e) };
@@ -197,6 +197,19 @@ export function audioExt(mime = '') {
   if (m.includes('webm')) return 'webm';
   if (m.includes('flac')) return 'flac';
   return 'webm';
+}
+
+/**
+ * 这个封装要不要在导出时转成 m4a。
+ *
+ * 录音器在安卓 WebView 里只能出 webm/opus（本机 WebView 是 Chrome 110，
+ * 连 audio/mp4 都不支持），而 webm 在微信、华为音乐、车机里基本打不开，
+ * 用户看到的就是「格式不对」。所以导出时交给原生层转成 AAC 封装成 .m4a。
+ * wav / mp3 / m4a 本身就是通用格式，原样保存即可。
+ */
+export function needsAacWrap(mime = '') {
+  const m = String(mime).toLowerCase();
+  return m.includes('webm') || m.includes('ogg') || m.includes('matroska');
 }
 
 export async function sha256Short(blob) {

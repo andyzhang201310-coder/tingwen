@@ -35,12 +35,21 @@ function chunkBase64(blob) {
 
 /**
  * 写入手机存储；非原生环境返回 null，调用方自行回退到 <a download>。
- * @returns {Promise<{path: string}|null>}
+ *
+ * convert=true 时，原生层会把 webm/opus 用 MediaCodec 转成 AAC 并封成 .m4a
+ * 再落盘（文件名里的后缀会一起换掉）；转码失败则退回原格式保存，
+ * 返回值的 converted 会告诉调用方到底转没转。
+ *
+ * @returns {Promise<{path: string, converted: boolean}|null>}
  */
-export async function saveBlobNative(blob, filename, { share = false } = {}) {
+export async function saveBlobNative(blob, filename, { share = false, convert = false } = {}) {
   const P = plugin();
   if (!P) return null;
-  const { id } = await P.open({ name: filename, mime: blob.type || 'application/octet-stream' });
+  const { id } = await P.open({
+    name: filename,
+    mime: blob.type || 'application/octet-stream',
+    convertTo: convert ? 'audio/mp4' : '',
+  });
   try {
     for (let off = 0; off < blob.size; off += CHUNK) {
       const part = blob.slice(off, Math.min(blob.size, off + CHUNK));
@@ -48,7 +57,7 @@ export async function saveBlobNative(blob, filename, { share = false } = {}) {
       await P.append({ id, data: await chunkBase64(part) });
     }
     const res = await P.close({ id, share });
-    return { path: res?.path || filename };
+    return { path: res?.path || filename, converted: !!res?.converted };
   } catch (e) {
     /* 写了一半失败：也要关掉会话，否则句柄一直占着文件 */
     try { await P.close({ id, share: false }); } catch { /* 忽略 */ }

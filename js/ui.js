@@ -5,13 +5,24 @@ import { T } from './i18n.js';
 /* ── Toast ─────────────────────────────── */
 export function toast(message, duration = 2200) {
   const root = document.getElementById('toast-root');
-  if (!root) return;
+  if (!root) return null;
   const node = el(`<div class="toast">${esc(message)}</div>`);
   root.appendChild(node);
   setTimeout(() => {
     node.classList.add('out');
     setTimeout(() => node.remove(), 220);
   }, duration);
+  return node;
+}
+
+/** 一直挂着、由调用方手动关掉的提示（转码这种要等几十秒的动作用） */
+export function toastSticky(message) {
+  const node = toast(message, 10 * 60 * 1000);
+  return () => {
+    if (!node) return;
+    node.classList.add('out');
+    setTimeout(() => node.remove(), 220);
+  };
 }
 
 export function haptic(ms = 8) {
