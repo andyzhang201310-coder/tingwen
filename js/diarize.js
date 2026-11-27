@@ -14,8 +14,17 @@
 
 import { T } from './i18n.js';
 
-export const LOCAL_VERSION = 'acoustic-v2';  // v2：加入梅尔倒谱 + CH 选人数（v1 为纯声学统计）
+export const LOCAL_VERSION = 'acoustic-v3';  // v3：句内按换人切分（v2 为整句聚类）
 export const CLOUD_SIM_VERSION = 'simulated-v1';
+
+/* 句内切分参数：一句里换人就断开，是 v3 的核心行为。
+   窗口 1.2s / 步进 0.6s：短到能卡住一次换人，又长到凑得出 3 个浊音帧算基频。
+   太短的句子（<1.8s）只有一两个窗，切了也只会把句子切碎，直接跳过。 */
+const SPLIT_MIN_SPAN_MS = 1800;
+const SPLIT_WIN_MS = 1200;
+const SPLIT_HOP_MS = 600;
+const SPLIT_MIN_PART_MS = 700;
+const SPLIT_PAD_MS = 60;
 
 /* ══════════════════════════════════════════
    音频解码
@@ -676,6 +685,9 @@ export function autoCluster(rawVectors, weights, maxK = MAX_SPEAKERS) {
     sds[d] = Math.sqrt(col.reduce((a, b) => a + (b - means[d]) ** 2, 0) / n) || 1;
   }
   const pts = rawVectors.map((v) => v.map((x, d) => ((x - means[d]) / sds[d]) * weights[d]));
+  /* 归一化参数要带出去：同一场录音内的更细单位（句内小窗）必须用同一套
+     means/sds/weights 投影，否则和这里算出来的中心不在一个空间里，无法比较。 */
+  const norm = { means, sds, weights };
 
   /* 选人数：以前靠轮廓系数排序，但同一场景下 k=2 与 k=3 的轮廓常常只差
      0.02 以内（合并两个相近的人反而“更整齐”），于是永远选不到真值。
@@ -721,7 +733,19 @@ export function autoCluster(rawVectors, weights, maxK = MAX_SPEAKERS) {
       best = { labels: win.labels, k, score, centers: win.centers, ch, stab, sep };
     }
   }
-  return { ...best, detail };
+  /* 单人也需要中心点：句内切分要拿它把每个小窗归到唯一的那一簇 */
+  if (!best.centers) {
+    const dim = pts[0].length;
+    best.centers = [Array.from({ length: dim }, (_, d) => pts.reduce((s, p) => s + p[d], 0) / n)];
+  }
+  return { ...best, pts, norm, detail };
+}
+
+/** 用某一场的归一化参数投影一个特征向量（与 autoCluster 内部同构） */
+export function projectVector(vector, norm) {
+  if (!norm) return vector.slice();
+  const { means, sds, weights } = norm;
+  return vector.map((x, d) => ((x - means[d]) / sds[d]) * (weights[d] || 0));
 }
 
 /* ══════════════════════════════════════════
@@ -777,8 +801,83 @@ function resultOf({ recordingId, engine, taskId, engineVersion, spans, status = 
       clarity: Number.isFinite(s.clarity) ? s.clarity : null,
       overlap: !!s.overlap,
       transcript_id: s.transcriptId,
+      /* 句内切分后同一 transcript_id 会有多条：用 part_index 标顺序，
+         没有切分的片段这两个字段为 null（旧读取方不受影响）。 */
+      part_index: Number.isInteger(s.partIndex) ? s.partIndex : null,
+      part_count: Number.isInteger(s.partCount) ? s.partCount : null,
     })),
   };
+}
+
+/* ══════════════════════════════════════════
+   句内切分：一句里换人 → 拆成两段
+   ══════════════════════════════════════════ */
+
+/** 把一个转录区间摊成重叠分析窗；太短的句子返回空数组（不切） */
+export function windowsOf(span) {
+  const dur = (span.endMs || 0) - (span.startMs || 0);
+  if (dur < SPLIT_MIN_SPAN_MS) return [];
+  /* 一句话特别长时（例如 15 秒的上限）按步进会出 20 多个窗，
+     手机上算起来太慢：超过 30 个窗就等比放大步进，仍保证覆盖整段。 */
+  const raw = Math.ceil(dur / SPLIT_HOP_MS);
+  const hop = raw > 30 ? Math.ceil(raw / 30) * SPLIT_HOP_MS : SPLIT_HOP_MS;
+  const out = [];
+  for (let t = span.startMs; t < span.endMs; t += hop) {
+    const end = Math.min(span.endMs, t + SPLIT_WIN_MS);
+    if (end - t < 400) break;
+    out.push({ startMs: Math.round(t), endMs: Math.round(end) });
+    if (end >= span.endMs) break;
+  }
+  return out.length >= 2 ? out : [];
+}
+
+/** 去掉「只跳一个窗又跳回来」的孤立标签：换人至少得撑住两个窗才算数 */
+export function smoothLabels(labels) {
+  const out = labels.slice();
+  for (let i = 1; i < out.length - 1; i += 1) {
+    if (out[i] === null || out[i + 1] === null) continue;
+    if (out[i - 1] === out[i + 1] && out[i] !== out[i - 1]) out[i] = out[i - 1];
+  }
+  return out;
+}
+
+/**
+ * 把一串带标签的窗压成连续片段，并把过短的片段并进较长的邻居。
+ * 输入：按时间排好序的 [{ startMs, endMs, label }]
+ * 输出：[{ label, startMs, endMs, units }]
+ */
+export function partsOf(units) {
+  if (!units.length) return [];
+  const groups = [];
+  units.forEach((u) => {
+    const last = groups[groups.length - 1];
+    if (last && last.label === u.label) {
+      last.endMs = u.endMs;
+      last.units.push(u);
+    } else {
+      groups.push({ label: u.label, startMs: u.startMs, endMs: u.endMs, units: [u] });
+    }
+  });
+
+  let merged = true;
+  while (merged && groups.length > 1) {
+    merged = false;
+    for (let i = 0; i < groups.length; i += 1) {
+      const g = groups[i];
+      if (g.endMs - g.startMs >= SPLIT_MIN_PART_MS) continue;
+      const prev = groups[i - 1];
+      const next = groups[i + 1];
+      const target = !prev ? next : (!next ? prev
+        : ((prev.endMs - prev.startMs) >= (next.endMs - next.startMs) ? prev : next));
+      target.startMs = Math.min(target.startMs, g.startMs);
+      target.endMs = Math.max(target.endMs, g.endMs);
+      target.units.push(...g.units);
+      groups.splice(i, 1);
+      merged = true;
+      break;
+    }
+  }
+  return groups;
 }
 
 /* ══════════════════════════════════════════
@@ -819,10 +918,11 @@ export class LocalDiarizationEngine {
     }
 
     onProgress?.(0.6, 'cluster');
-    const { labels, k } = autoCluster(
+    const clustered = autoCluster(
       withFeat.map((x) => x.feat.vector),
       withFeat[0].feat.weights,
     );
+    const { labels, k, centers, pts, norm } = clustered;
 
     // 按首次出现时间排序，保证编号稳定（Speaker 1 先说话）
     const firstSeen = new Map();
@@ -835,7 +935,53 @@ export class LocalDiarizationEngine {
     const labelOf = new Map();
     order.forEach((lb, idx) => labelOf.set(lb, idx));
 
-    const spansOut = withFeat.map((x, i) => {
+    /* ── 句内切分：整句聚完还要看句子里有没有换人 ──
+       只用整句特征会把人声平均掉（A 说前 3 秒、B 说后 3 秒，得到的是「两个人中间的声音」），
+       所以对够长的句子再摊成 1.2s 小窗，用同一套归一化参数把它们归到整句聚类得到的中心上，
+       连续窗换簇就断行。人数 k=1 时不切：整场只有一个人，切了只会碎。 */
+    const splits = new Map();   // transcriptId -> { parts, radius }
+    if (k > 1 && centers?.length) {
+      const dists = pts.map((p, i) => dist(p, centers[labels[i]]));
+      const radius = median(dists) || 0.5;
+      onProgress?.(0.72, 'split');
+      withFeat.forEach((x) => {
+        const parts = splitSpanBySpeaker(pcm, x.span, centers, norm, radius);
+        if (parts.length > 1) splits.set(x.span.id, { parts, radius });
+      });
+    }
+
+    const spansOut = [];
+    withFeat.forEach((x, i) => {
+      const split = splits.get(x.span.id);
+      if (split) {
+        const { parts, radius } = split;
+        parts.forEach((p, partIndex) => {
+          const dMean = p.units.reduce((s, u) => s + u.d, 0) / p.units.length;
+          const snrMean = p.units.reduce((s, u) => s + (Number.isFinite(u.feat.snrDb) ? u.feat.snrDb : 20), 0) / p.units.length;
+          const overlap = p.units.some((u) => u.feat.overlap);
+          const clarities = p.units.map((u) => u.feat.clarity).filter((c) => Number.isFinite(c));
+          /* 置信度按「这几窗离本簇中心多远」算：小窗没有整句平均，天然比整句散，
+             所以用 2.2 倍半径做缓冲，越靠近中心越可信。 */
+          const conf = Math.max(0.3, Math.min(0.95, 0.95 - 0.45 * (dMean / (radius * 2.2 || 1))));
+          const snrFactor = Math.max(0.55, Math.min(1, 0.55 + (snrMean / 30) * 0.45));
+          const tuned = Math.max(0.2, Math.min(0.95, conf * snrFactor * (overlap ? 0.8 : 1)));
+          spansOut.push({
+            engineSpeakerId: `local_s${labelOf.get(p.label)}`,
+            transcriptId: x.span.id,
+            startMs: p.startMs,
+            endMs: p.endMs,
+            confidence: Number(tuned.toFixed(3)),
+            snrDb: Math.round(snrMean),
+            clarity: clarities.length ? Number(median(clarities).toFixed(2)) : null,
+            overlap,
+            cluster: labelOf.get(p.label),
+            partIndex,
+            partCount: parts.length,
+          });
+        });
+        return;
+      }
+
       const group = labels[i];
       const peers = withFeat.filter((y, j) => labels[j] === group);
       const own = x.feat.vector;
@@ -851,7 +997,7 @@ export class LocalDiarizationEngine {
       const snr = Number.isFinite(x.feat.snrDb) ? x.feat.snrDb : 20;
       const snrFactor = Math.max(0.55, Math.min(1, 0.55 + (snr / 30) * 0.45));
       const tuned = Math.max(0.2, Math.min(0.95, conf * snrFactor * (x.feat.overlap ? 0.8 : 1)));
-      return {
+      spansOut.push({
         engineSpeakerId: `local_s${labelOf.get(group)}`,
         transcriptId: x.span.id,
         startMs: x.span.startMs,
@@ -861,7 +1007,7 @@ export class LocalDiarizationEngine {
         clarity: x.feat.clarity,
         overlap: x.feat.overlap,
         cluster: labelOf.get(group),
-      };
+      });
     });
 
     onProgress?.(0.95, 'done');
@@ -998,6 +1144,29 @@ function spanMap(result) {
   return m;
 }
 
+/** 同一 transcript 可能有多条（句内按换人切分），这里按时间归拢 */
+function spanList(result) {
+  const m = new Map();
+  (result?.speakers || []).forEach((s) => {
+    if (!s.transcript_id) return;
+    if (!m.has(s.transcript_id)) m.set(s.transcript_id, []);
+    m.get(s.transcript_id).push(s);
+  });
+  m.forEach((list) => list.sort((a, b) => (a.start_ms || 0) - (b.start_ms || 0)));
+  return m;
+}
+
+/** 在另一引擎的片段里找与给定区间重叠最多的那一条 */
+function overlapPick(span, list) {
+  let best = null;
+  let bestOv = 0;
+  (list || []).forEach((s) => {
+    const ov = Math.min(span.end_ms || 0, s.end_ms || 0) - Math.max(span.start_ms || 0, s.start_ms || 0);
+    if (ov > bestOv) { bestOv = ov; best = s; }
+  });
+  return best;
+}
+
 /** 用共现统计建立“云端标签 → 本机标签”的映射，只保留可靠且唯一的一一对应 */
 function mapCloudToLocal(localMap, cloudMap) {
   const votes = new Map();
@@ -1039,6 +1208,53 @@ export function groupStats(trs, speakerKey) {
 }
 
 /**
+ * 在一句话内部找换人点：摊成小窗 → 用整句聚类得到的中心归类 → 连续换簇就断开。
+ * @param {{data:Float32Array,sampleRate:number}} pcm
+ * @param {{id:string,startMs:number,endMs:number}} span
+ * @param {number[][]} centers 已投影空间中的簇中心
+ * @param {{means:number[],sds:number[],weights:number[]}} norm
+ * @param {number} radius 整句点到各自中心的距离中位数（用于算置信度）
+ * @returns {Array<{label:number,startMs:number,endMs:number,units:Array}>} 至少 1 段
+ */
+export function splitSpanBySpeaker(pcm, span, centers, norm, radius = 0.5) {
+  const wins = windowsOf(span);
+  if (!wins.length || !centers?.length) return [];
+  const units = [];
+  wins.forEach((w) => {
+    const feat = analyzeSpan(pcm, w, { padMs: SPLIT_PAD_MS });
+    if (!feat) return;
+    const p = projectVector(feat.vector, norm);
+    let bestC = 0;
+    let bestD = Infinity;
+    centers.forEach((c, ci) => {
+      const d = dist(p, c);
+      if (d < bestD) { bestD = d; bestC = ci; }
+    });
+    units.push({ startMs: w.startMs, endMs: w.endMs, label: bestC, d: bestD, feat });
+  });
+  if (units.length < 2) return [];
+  const sm = smoothLabels(units.map((u) => u.label));
+  units.forEach((u, i) => { u.label = sm[i]; });
+  const parts = partsOf(units);
+  /* 分析窗本身是重叠的（1.2s 窗 / 0.6s 步进），直接拿窗边缘当边界会让相邻两段重叠半秒。
+     取两个相邻窗中心的中点当切点，段与段首尾相接，时间轴才不重复计数。 */
+  for (let i = 1; i < parts.length; i += 1) {
+    const prevLast = parts[i - 1].units[parts[i - 1].units.length - 1];
+    const nextFirst = parts[i].units[0];
+    const cut = Math.round(
+      ((prevLast.startMs + prevLast.endMs) / 2 + (nextFirst.startMs + nextFirst.endMs) / 2) / 2,
+    );
+    parts[i - 1].endMs = Math.min(cut, parts[i - 1].endMs);
+    parts[i].startMs = Math.max(cut, parts[i].startMs);
+  }
+  if (parts.length) {
+    parts[0].startMs = Math.min(parts[0].startMs, span.startMs);
+    parts[parts.length - 1].endMs = Math.max(parts[parts.length - 1].endMs, span.endMs);
+  }
+  return parts;
+}
+
+/**
  * 融合本地与云端结果。
  * @returns {{
  *   assignments: Array<{transcriptId, cluster, confidence, source, conflict}>,
@@ -1048,6 +1264,10 @@ export function groupStats(trs, speakerKey) {
 export function fuseResults({ local, cloud, transcripts }) {
   const localMap = spanMap(local);
   const cloudMap = spanMap(cloud);
+  /* 句内切分后同一 transcript 会有多条，融合时必须按"条"对齐，
+     不能再退回整句一条的老路，否则切出来的第二段说话人就被丢掉了。 */
+  const localList = spanList(local);
+  const cloudList = spanList(cloud);
   const mapping = localMap.size ? mapCloudToLocal(localMap, cloudMap) : new Map();
 
   // 只有云端结果时，用云端标签自己当簇，按首次出现重排
@@ -1066,6 +1286,55 @@ export function fuseResults({ local, cloud, transcripts }) {
   let covered = 0;
 
   transcripts.forEach((t) => {
+    const lList = localList.get(t.id) || [];
+    const cList = cloudList.get(t.id) || [];
+
+    /* ── 句内切分：本机给出多段，就按多段落库 ── */
+    if (lList.length > 1) {
+      const parts = lList.map((sp) => {
+        const c = overlapPick(sp, cList);
+        let confidence = (sp.confidence ?? 0.5) * 0.92;
+        let source = 'local';
+        let conflict = false;
+        if (c) {
+          const mapped = mapping.get(c.engine_speaker_id) || null;
+          if (mapped === sp.engine_speaker_id) {
+            confidence = Math.min(0.97, ((sp.confidence ?? 0.5) + (c.confidence ?? 0.5)) / 2 + 0.06);
+            source = 'local+cloud';
+          } else {
+            confidence = Math.min(0.85, Math.min(sp.confidence ?? 0.5, c.confidence ?? 0.5) * 0.72);
+            conflict = true;
+          }
+        }
+        return {
+          startMs: sp.start_ms,
+          endMs: sp.end_ms,
+          cluster: sp.engine_speaker_id,
+          confidence: Number(confidence.toFixed(3)),
+          source,
+          conflict,
+        };
+      });
+      const dominant = parts.reduce(
+        (a, b) => ((b.endMs - b.startMs) > (a.endMs - a.startMs) ? b : a),
+        parts[0],
+      );
+      const anyConflict = parts.some((p) => p.conflict);
+      if (anyConflict) conflicts += 1;
+      covered += 1;
+      assignments.push({
+        transcriptId: t.id,
+        cluster: dominant.cluster,
+        confidence: dominant.confidence,
+        source: parts.every((p) => p.source === 'local+cloud') ? 'local+cloud' : dominant.source,
+        conflict: anyConflict,
+        parts: parts.map((p) => ({
+          startMs: p.startMs, endMs: p.endMs, cluster: p.cluster, confidence: p.confidence,
+        })),
+      });
+      return;
+    }
+
     const l = localMap.get(t.id);
     const c = cloudMap.get(t.id);
     let out = null;
@@ -1125,9 +1394,21 @@ export function fuseResults({ local, cloud, transcripts }) {
 /** 把簇编号按首次出现时间重排成 0..n-1，保证编号稳定（Speaker 1 先说话） */
 export function orderClusters(assignments) {
   const ordered = [];
+  const push = (c) => { if (c && !ordered.includes(c)) ordered.push(c); };
   assignments.forEach((a) => {
-    if (!ordered.includes(a.cluster)) ordered.push(a.cluster);
+    /* 切分过的行按段的时间顺序取号：谁先开口谁是 Speaker 1，
+       不能按"主导说话人"取号，否则一句里先说话的人反而编号靠后 */
+    if (a.parts?.length) {
+      [...a.parts].sort((x, y) => x.startMs - y.startMs).forEach((p) => push(p.cluster));
+      push(a.cluster);
+    } else {
+      push(a.cluster);
+    }
   });
   const map = new Map(ordered.map((c, i) => [c, i]));
-  return assignments.map((a) => ({ ...a, index: map.get(a.cluster) }));
+  return assignments.map((a) => ({
+    ...a,
+    index: map.get(a.cluster),
+    parts: a.parts ? a.parts.map((p) => ({ ...p, index: map.get(p.cluster) })) : a.parts,
+  }));
 }

@@ -8,7 +8,7 @@
  */
 
 import {
-  getRecording, listTranscripts, updateTranscript,
+  getRecording, listTranscripts, updateTranscript, addTranscript,
   listSpeakers, getSpeaker, createSpeaker, updateSpeaker, deleteSpeaker,
   listTasks, putTask, addResult, listResults,
   logAssignment, listAssignments, logMerge, listMerges, updateMerge,
@@ -165,7 +165,12 @@ export async function runDiarization(recordingId, opts = {}) {
     return (ta?.startMs || 0) - (tb?.startMs || 0);
   }));
   const byTr = new Map(ordered.map((a) => [a.transcriptId, a]));
-  const speakerCount = new Set(ordered.map((a) => a.index)).size;
+  const clusterIdx = new Set();
+  ordered.forEach((a) => {
+    clusterIdx.add(a.index);
+    (a.parts || []).forEach((p) => clusterIdx.add(p.index));
+  });
+  const speakerCount = clusterIdx.size;
 
   /* ── 身份空间：沿用已有 Speaker 记录，不打断人工确认 ── */
   const existing = await listSpeakers(recordingId);
@@ -189,11 +194,21 @@ export async function runDiarization(recordingId, opts = {}) {
   let assigned = 0;
   let lockedKept = 0;
   let conflicts = 0;
+  let splits = 0;
   for (const t of trs) {
     const a = byTr.get(t.id);
     if (!a) continue;
     if (a.conflict) conflicts += 1;
     if (t.speakerLocked) { lockedKept += 1; continue; }
+
+    /* 一句里换人：按切分点把这行拆成多行，每行各自的说话人 */
+    if (a.parts && a.parts.length > 1) {
+      const made = await applyParts(recordingId, t, a.parts, speakers, a.conflict ? 'engine-mismatch' : 're-diarized', a.source);
+      assigned += made;
+      splits += 1;
+      continue;
+    }
+
     const target = speakers[a.index];
     const patch = {
       speakerId: target.id,
@@ -231,11 +246,144 @@ export async function runDiarization(recordingId, opts = {}) {
     assigned,
     lockedKept,
     conflicts,
+    splits,
     coverage: fused.coverage,
     engines,
     simulated: cloud.mode === 'simulated',
     cloudConfigured: cloud.mode === 'http',
   };
+}
+
+/* ══════════════════════════════════════════
+   句内切分：一句里换人，就把这行拆成多行
+   ══════════════════════════════════════════ */
+
+/* 切点尽量落在标点之后：中文没有词边界，光标在句中会把一句话劈成两半 */
+const CUT_PUNCT = /[。！？!?；;，,、：:…‥」』”"）)]/;
+
+/** 把目标位置挪到最近的标点之后；挪不动就按原位置切 */
+function snapCut(text, target, min) {
+  const lower = min + 1;
+  const upper = text.length - 1;
+  if (upper < lower) return Math.min(upper, Math.max(lower, target));
+  const clamped = Math.min(upper, Math.max(lower, target));
+  for (let d = 0; d <= 6; d += 1) {
+    const after = clamped + d;
+    if (after <= upper && CUT_PUNCT.test(text[after - 1])) return after;
+    const before = clamped - d;
+    if (before >= lower && CUT_PUNCT.test(text[before - 1])) return before;
+  }
+  return clamped;
+}
+
+/** 按各段时长占比把文本切成 parts.length 段，返回切点边界（含首尾） */
+export function textCuts(text, parts) {
+  if (!text || !parts?.length) return null;
+  const total = parts.reduce((s, p) => s + Math.max(1, p.endMs - p.startMs), 0) || 1;
+  const bounds = [0];
+  let acc = 0;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    acc += Math.max(1, parts[i].endMs - parts[i].startMs);
+    const target = Math.round((text.length * acc) / total);
+    bounds.push(snapCut(text, target, bounds[bounds.length - 1]));
+  }
+  bounds.push(text.length);
+  for (let i = 1; i < bounds.length; i += 1) {
+    if (bounds[i] <= bounds[i - 1]) return null;   // 切点退化，宁可不切
+  }
+  return bounds;
+}
+
+/** 纠错记录按新的段落切分：完全落在段内的保留并平移坐标，跨界的那条丢弃 */
+function sliceFixes(fixes, from, to) {
+  const out = (fixes || [])
+    .filter((c) => Number.isFinite(c.cs) && c.cs >= from && c.ce <= to)
+    .map((c) => ({ ...c, cs: c.cs - from, ce: c.ce - from }));
+  return out.length ? out : null;
+}
+
+/** 把一行拆成多行并分别归属说话人，返回新建的行数（含原行改写） */
+async function applyParts(recordingId, t, parts, speakers, reason, engine = 'local') {
+  const text = String(t.text || '');
+  /* 每段至少 2 个字：三个字的一句话拆成两行，不如不拆 */
+  const bounds = text.length >= parts.length * 2 ? textCuts(text, parts) : null;
+  if (!bounds) {
+    // 切不出来（太短 / 切点重合）：退化成"整行归给说得最久的那个"
+    const dominant = parts.reduce((a, b) => ((b.endMs - b.startMs) > (a.endMs - a.startMs) ? b : a), parts[0]);
+    const target = speakers[dominant.index] || speakers[0];
+    await updateTranscript(t.id, {
+      speakerId: target.id,
+      speakerConfidence: dominant.confidence,
+      speakerSource: 'automatic',
+      speakerEngine: engine,
+    });
+    return 1;
+  }
+
+  const raw = t.raw ? String(t.raw) : '';
+  const rawBounds = raw ? bounds.map((b) => Math.round((b / text.length) * raw.length)) : null;
+  if (rawBounds) {
+    for (let i = 1; i < rawBounds.length; i += 1) {
+      if (rawBounds[i] < rawBounds[i - 1]) rawBounds[i] = rawBounds[i - 1];
+    }
+  }
+  /* 纠错标记跟着原文走：即使这一段的纠错记录被切点丢掉了，正文仍是改过的版本，
+     不能因为 corrections 为空就说它没纠过错。 */
+  const correctedFlag = (fixes) => (fixes ? 1 : (t.corrected ? 1 : 0));
+
+  for (let i = 0; i < parts.length; i += 1) {
+    const p = parts[i];
+    const from = bounds[i];
+    const to = bounds[i + 1];
+    let piece = text.slice(from, to).trim();
+    if (!piece) continue;
+    const target = speakers[p.index] || speakers[0];
+    const fixes = sliceFixes(t.corrections, from, to);
+    const rawPiece = rawBounds ? raw.slice(rawBounds[i], rawBounds[i + 1]).trim() : '';
+
+    if (i === 0) {
+      if (t.speakerId && t.speakerId !== target.id) {
+        await logAssignment({
+          recordingId, transcriptId: t.id, oldSpeakerId: t.speakerId,
+          newSpeakerId: target.id, source: 'automatic', reason,
+        });
+      }
+      /* autoFix: 这里的 text 变化是切分产生的，不是人工编辑，
+         不该写 original（否则文稿页会多出一个"已修改"标记） */
+      await updateTranscript(t.id, {
+        autoFix: true,
+        text: piece,
+        startMs: Math.round(p.startMs),
+        endMs: Math.round(p.endMs),
+        raw: rawPiece || null,
+        corrections: fixes,
+        corrected: correctedFlag(fixes),
+        speakerId: target.id,
+        speakerConfidence: p.confidence,
+        speakerSource: 'automatic',
+        speakerEngine: engine,
+      });
+    } else {
+      await addTranscript({
+        recordingId,
+        startMs: Math.round(p.startMs),
+        endMs: Math.round(p.endMs),
+        text: piece,
+        engine: t.engine,
+        status: t.status === 'interim' ? 'final' : t.status,
+        source: t.source || 'live',
+        edited: t.edited ? 1 : 0,
+        raw: rawPiece || null,
+        corrections: fixes,
+        corrected: correctedFlag(fixes),
+        speakerId: target.id,
+        speakerConfidence: p.confidence,
+        speakerSource: 'automatic',
+        speakerEngine: engine,
+      });
+    }
+  }
+  return parts.length;
 }
 
 /* ══════════════════════════════════════════
